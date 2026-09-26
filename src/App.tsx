@@ -22,6 +22,7 @@ function App() {
   const [roomNames, setRoomNames] = useState<Record<string, string>>({});
   const [tool, setTool] = useState<Tool>("select");
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
+  const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(null);
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [calibration, setCalibration] = useState<Point[]>([]);
   const [calibrationEvidence, setCalibrationEvidence] = useState<CalibrationEvidence[]>([]);
@@ -333,6 +334,7 @@ function App() {
   const removeOpening = (id: string) => setOpenings((v) => v.filter((o) => o.id !== id));
 
   const selectedWall = walls.find((wall) => wall.id === selectedWallId) || null;
+  const selectedOpening = openings.find((opening) => opening.id === selectedOpeningId) || null;
 
   const setSelectedWallLengthM = (lengthM: number) => {
     if (!selectedWall || !metersPerPixel || lengthM <= 0) return;
@@ -354,6 +356,15 @@ function App() {
       wall.id === selectedWall.id
         ? { ...wall, thickness: thicknessM / metersPerPixel }
         : wall
+    ));
+  };
+
+  const updateSelectedOpening = (patch: Partial<Opening>) => {
+    if (!selectedOpening) return;
+    setOpenings((items) => items.map((opening) =>
+      opening.id === selectedOpening.id
+        ? { ...opening, ...patch }
+        : opening
     ));
   };
 
@@ -527,9 +538,23 @@ function App() {
                   const p2 = pointOnWall(w, Math.min(1, o.centerT + dt / 2));
                   const mid = pointOnWall(w, o.centerT);
                   return (
-                    <g key={o.id} onDoubleClick={(e) => { e.stopPropagation(); removeOpening(o.id); }}>
+                    <g
+                      key={o.id}
+                      onClick={(e) => {
+                        if (tool === "select") {
+                          e.stopPropagation();
+                          setSelectedOpeningId(o.id);
+                          setSelectedWallId(null);
+                        }
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        removeOpening(o.id);
+                        setSelectedOpeningId(null);
+                      }}
+                    >
                       <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} className="opening-cut" strokeWidth={Math.max(7, w.thickness + 5)} />
-                      <circle cx={mid.x} cy={mid.y} r={o.kind === "door" ? 10 : 8} className={o.kind === "door" ? "door-mark" : "window-mark"} />
+                      <circle cx={mid.x} cy={mid.y} r={o.kind === "door" ? 10 : 8} className={`${o.kind === "door" ? "door-mark" : "window-mark"} ${selectedOpeningId === o.id ? "selected-opening" : ""}`} />
                     </g>
                   );
                 })}
@@ -604,6 +629,53 @@ function App() {
               />
             </label>
             <button onClick={() => setSelectedWallId(null)}>إنهاء التحديد</button>
+          </div>
+        )}
+
+        {selectedOpening && (
+          <div className="precision-editor opening-editor">
+            <strong>تحرير الفتحة بدقة</strong>
+            <label>النوع
+              <select
+                value={selectedOpening.kind}
+                onChange={(e) => updateSelectedOpening({
+                  kind: e.target.value as Opening["kind"],
+                  sillM: e.target.value === "door" ? 0 : Math.max(0.6, selectedOpening.sillM),
+                })}
+              >
+                <option value="door">باب</option>
+                <option value="window">نافذة</option>
+              </select>
+            </label>
+            <label>العرض (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0.2"
+                value={selectedOpening.widthM}
+                onChange={(e) => updateSelectedOpening({ widthM: Math.max(0.2, Number(e.target.value)) })}
+              />
+            </label>
+            <label>الارتفاع (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0.2"
+                value={selectedOpening.heightM}
+                onChange={(e) => updateSelectedOpening({ heightM: Math.max(0.2, Number(e.target.value)) })}
+              />
+            </label>
+            <label>ارتفاع الجلسة (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0"
+                value={selectedOpening.sillM}
+                disabled={selectedOpening.kind === "door"}
+                onChange={(e) => updateSelectedOpening({ sillM: Math.max(0, Number(e.target.value)) })}
+              />
+            </label>
+            <button onClick={() => setSelectedOpeningId(null)}>إنهاء التحديد</button>
           </div>
         )}
 
