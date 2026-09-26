@@ -544,7 +544,7 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div>
-          <div className="brand">منزل H <span>ENGINE V5</span></div>
+          <div className="brand">منزل H <span>ENGINE V6</span></div>
           <div className="subtitle">هندسة قابلة للمراجعة • غرف تلقائية • فتحات حقيقية • هوية سعودية</div>
         </div>
         <div className="view-switch">
@@ -939,6 +939,21 @@ function ThreePreview(props: {
 }) {
   const mount = useRef<HTMLDivElement | null>(null);
   const exportRoot = useRef<THREE.Group | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+
+  const exportPng = () => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    try {
+      const dataUrl = renderer.domElement.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = "manzel-h-render.png";
+      a.click();
+    } catch {
+      console.error("Unable to export PNG");
+    }
+  };
 
   const exportGlb = async () => {
     if (!exportRoot.current) return;
@@ -968,7 +983,8 @@ function ThreePreview(props: {
     scene.fog = new THREE.Fog(0xe9e4da, 45, 110);
 
     const camera = new THREE.PerspectiveCamera(45, el.clientWidth / Math.max(el.clientHeight, 1), 0.1, 500);
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    rendererRef.current = renderer;
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(el.clientWidth, el.clientHeight);
     renderer.shadowMap.enabled = true;
@@ -1260,6 +1276,7 @@ function ThreePreview(props: {
       cancelAnimationFrame(frame);
       resize.disconnect();
       exportRoot.current = null;
+      rendererRef.current = null;
       renderer.dispose();
       renderer.domElement.removeEventListener("pointerdown", down);
       renderer.domElement.removeEventListener("pointermove", move);
@@ -1289,6 +1306,7 @@ function ThreePreview(props: {
       {!props.walls.length && <div className="three-hint">اكتشف أو ارسم الجدران لتظهر هنا</div>}
       <div className="three-actions">
         <button onClick={exportGlb} disabled={!props.walls.length}>تصدير GLB</button>
+        <button onClick={exportPng} disabled={!props.walls.length}>صورة PNG</button>
       </div>
       <div className="three-badge">أرضيات + سقف + سور • اسحب للدوران • عجلة للتقريب</div>
     </div>
