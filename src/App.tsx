@@ -6,6 +6,7 @@ import { validateReconstruction } from "./validation";
 import { analyzeWithRemote } from "./analyzer";
 import { createEvidence, robustScale } from "./calibration";
 import { rasterizePlanFile } from "./importers";
+import { downloadTextFile, exportPlanDxf } from "./exporters";
 
 type Tool = "select" | "calibrate" | "wall" | "door" | "window" | "column" | "stair";
 
@@ -25,6 +26,8 @@ function App() {
   const [tool, setTool] = useState<Tool>("select");
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
   const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(null);
+  const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
+  const [selectedStairId, setSelectedStairId] = useState<string | null>(null);
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [calibration, setCalibration] = useState<Point[]>([]);
   const [calibrationEvidence, setCalibrationEvidence] = useState<CalibrationEvidence[]>([]);
@@ -374,6 +377,8 @@ function App() {
 
   const selectedWall = walls.find((wall) => wall.id === selectedWallId) || null;
   const selectedOpening = openings.find((opening) => opening.id === selectedOpeningId) || null;
+  const selectedColumn = columns.find((column) => column.id === selectedColumnId) || null;
+  const selectedStair = stairs.find((stair) => stair.id === selectedStairId) || null;
 
   const setSelectedWallLengthM = (lengthM: number) => {
     if (!selectedWall || !metersPerPixel || lengthM <= 0) return;
@@ -395,6 +400,20 @@ function App() {
       wall.id === selectedWall.id
         ? { ...wall, thickness: thicknessM / metersPerPixel }
         : wall
+    ));
+  };
+
+  const updateSelectedColumn = (patch: Partial<Column>) => {
+    if (!selectedColumn) return;
+    setColumns((items) => items.map((column) =>
+      column.id === selectedColumn.id ? { ...column, ...patch } : column
+    ));
+  };
+
+  const updateSelectedStair = (patch: Partial<Stair>) => {
+    if (!selectedStair) return;
+    setStairs((items) => items.map((stair) =>
+      stair.id === selectedStair.id ? { ...stair, ...patch } : stair
     ));
   };
 
@@ -431,6 +450,16 @@ function App() {
       stairs,
     };
   }
+
+  const exportDxf = () => {
+    if (!metersPerPixel) {
+      setMessage("عاير القياس قبل تصدير DXF.");
+      return;
+    }
+    const dxf = exportPlanDxf({ walls, openings, columns, stairs, metersPerPixel });
+    downloadTextFile(dxf, "manzel-h-plan.dxf", "application/dxf");
+    setMessage("تم تصدير مخطط DXF بوحدة المتر.");
+  };
 
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(createSnapshot(true), null, 2)], { type: "application/json" });
@@ -497,7 +526,7 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div>
-          <div className="brand">منزل H <span>ENGINE V4</span></div>
+          <div className="brand">منزل H <span>ENGINE V5</span></div>
           <div className="subtitle">هندسة قابلة للمراجعة • غرف تلقائية • فتحات حقيقية • هوية سعودية</div>
         </div>
         <div className="view-switch">
@@ -522,6 +551,7 @@ function App() {
         <button onClick={autoTrace} disabled={!imageUrl}>تحليل الجدران</button>
         <button onClick={() => { setWalls([]); setOpenings([]); setRooms([]); setColumns([]); setStairs([]); }} disabled={!walls.length && !columns.length && !stairs.length}>مسح</button>
         <button onClick={exportJson} disabled={!walls.length}>تصدير مشروع</button>
+        <button onClick={exportDxf} disabled={!walls.length || !scaleReady}>تصدير DXF</button>
         <button onClick={() => importRef.current?.click()}>استيراد مشروع</button>
         <input ref={importRef} hidden type="file" accept=".json,application/json" onChange={(e) => importProject(e.target.files?.[0])} />
         <button onClick={restoreAutosave}>استعادة المسودة</button>
@@ -616,8 +646,17 @@ function App() {
                       y={col.point.y - h / 2}
                       width={w}
                       height={h}
-                      className="column-mark"
-                      onDoubleClick={(e) => { e.stopPropagation(); setColumns((items) => items.filter((x) => x.id !== col.id)); }}
+                      className={`column-mark ${selectedColumnId === col.id ? "selected-structural" : ""}`}
+                      onClick={(e) => {
+                        if (tool === "select") {
+                          e.stopPropagation();
+                          setSelectedColumnId(col.id);
+                          setSelectedStairId(null);
+                          setSelectedWallId(null);
+                          setSelectedOpeningId(null);
+                        }
+                      }}
+                      onDoubleClick={(e) => { e.stopPropagation(); setColumns((items) => items.filter((x) => x.id !== col.id)); setSelectedColumnId(null); }}
                     />
                   );
                 })}
@@ -626,8 +665,18 @@ function App() {
                   const h = scaleReady ? stair.runM / metersPerPixel! : 120;
                   return (
                     <g key={stair.id} transform={`translate(${stair.origin.x} ${stair.origin.y}) rotate(${stair.rotationDeg})`}>
-                      <rect x={-w/2} y={-h/2} width={w} height={h} className="stair-mark"
-                        onDoubleClick={(e) => { e.stopPropagation(); setStairs((items) => items.filter((x) => x.id !== stair.id)); }} />
+                      <rect x={-w/2} y={-h/2} width={w} height={h}
+                        className={`stair-mark ${selectedStairId === stair.id ? "selected-structural" : ""}`}
+                        onClick={(e) => {
+                          if (tool === "select") {
+                            e.stopPropagation();
+                            setSelectedStairId(stair.id);
+                            setSelectedColumnId(null);
+                            setSelectedWallId(null);
+                            setSelectedOpeningId(null);
+                          }
+                        }}
+                        onDoubleClick={(e) => { e.stopPropagation(); setStairs((items) => items.filter((x) => x.id !== stair.id)); setSelectedStairId(null); }} />
                     </g>
                   );
                 })}
@@ -703,6 +752,52 @@ function App() {
               />
             </label>
             <button onClick={() => setSelectedWallId(null)}>إنهاء التحديد</button>
+          </div>
+        )}
+
+        {selectedColumn && (
+          <div className="precision-editor">
+            <strong>تحرير العمود بدقة</strong>
+            <label>العرض (م)
+              <input type="number" step="0.001" min="0.1" value={selectedColumn.widthM}
+                onChange={(e) => updateSelectedColumn({ widthM: Math.max(0.1, Number(e.target.value)) })} />
+            </label>
+            <label>العمق (م)
+              <input type="number" step="0.001" min="0.1" value={selectedColumn.depthM}
+                onChange={(e) => updateSelectedColumn({ depthM: Math.max(0.1, Number(e.target.value)) })} />
+            </label>
+            <label>الارتفاع (م)
+              <input type="number" step="0.001" min="0.2" value={selectedColumn.heightM}
+                onChange={(e) => updateSelectedColumn({ heightM: Math.max(0.2, Number(e.target.value)) })} />
+            </label>
+            <button onClick={() => setSelectedColumnId(null)}>إنهاء التحديد</button>
+          </div>
+        )}
+
+        {selectedStair && (
+          <div className="precision-editor">
+            <strong>تحرير الدرج بدقة</strong>
+            <label>العرض (م)
+              <input type="number" step="0.001" min="0.6" value={selectedStair.widthM}
+                onChange={(e) => updateSelectedStair({ widthM: Math.max(0.6, Number(e.target.value)) })} />
+            </label>
+            <label>طول المسار (م)
+              <input type="number" step="0.001" min="1" value={selectedStair.runM}
+                onChange={(e) => updateSelectedStair({ runM: Math.max(1, Number(e.target.value)) })} />
+            </label>
+            <label>الارتفاع (م)
+              <input type="number" step="0.001" min="0.5" value={selectedStair.riseM}
+                onChange={(e) => updateSelectedStair({ riseM: Math.max(0.5, Number(e.target.value)) })} />
+            </label>
+            <label>عدد الدرجات
+              <input type="number" step="1" min="3" value={selectedStair.steps}
+                onChange={(e) => updateSelectedStair({ steps: Math.max(3, Math.round(Number(e.target.value))) })} />
+            </label>
+            <label>الدوران (°)
+              <input type="number" step="1" value={selectedStair.rotationDeg}
+                onChange={(e) => updateSelectedStair({ rotationDeg: Number(e.target.value) })} />
+            </label>
+            <button onClick={() => setSelectedStairId(null)}>إنهاء التحديد</button>
           </div>
         )}
 
