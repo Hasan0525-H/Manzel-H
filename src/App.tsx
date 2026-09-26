@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
-import type { Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
+import type { CalibrationEvidence, Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
 import { validateReconstruction } from "./validation";
 import { analyzeWithRemote } from "./analyzer";
+import { createEvidence, robustScale } from "./calibration";
+import { rasterizePlanFile } from "./importers";
 
 type Tool = "select" | "calibrate" | "wall" | "door" | "window";
 
@@ -21,6 +23,8 @@ function App() {
   const [tool, setTool] = useState<Tool>("select");
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [calibration, setCalibration] = useState<Point[]>([]);
+  const [calibrationEvidence, setCalibrationEvidence] = useState<CalibrationEvidence[]>([]);
+  const [calibrationSpreadPct, setCalibrationSpreadPct] = useState<number | null>(null);
   const [knownMeters, setKnownMeters] = useState(4);
   const [metersPerPixel, setMetersPerPixel] = useState<number | null>(null);
   const [wallHeight, setWallHeight] = useState(3.2);
@@ -63,32 +67,28 @@ function App() {
     return () => clearTimeout(id);
   }, [walls, openings, rooms, metersPerPixel, wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible]);
 
-  const readAsDataUrl = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-
   const onUpload = async (file?: File) => {
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    const dataUrl = await readAsDataUrl(file);
-    const img = new Image();
-    img.onload = () => {
-      setImageSize({ w: img.naturalWidth, h: img.naturalHeight });
-      setImageUrl(url);
-      setImageDataUrl(dataUrl);
+    try {
+      setMessage("جاري تجهيز المخطط...");
+      const raster = await rasterizePlanFile(file);
+      setImageSize({ w: raster.width, h: raster.height });
+      setImageUrl(raster.dataUrl);
+      setImageDataUrl(raster.dataUrl);
       setWalls([]);
       setOpenings([]);
       setRooms([]);
       setRoomNames({});
       setCalibration([]);
+      setCalibrationEvidence([]);
+      setCalibrationSpreadPct(null);
       setMetersPerPixel(null);
-      setMessage("تم رفع المخطط. عاير القياس أولاً للحصول على أبعاد حقيقية.");
-    };
-    img.src = url;
+      setMessage(raster.sourceType === "pdf"
+        ? "تم تحميل الصفحة الأولى من PDF. عاير بعدًا معروفًا ثم شغّل التحليل."
+        : "تم رفع المخطط. عاير القياس أولاً للحصول على أبعاد حقيقية.");
+    } catch {
+      setMessage("تعذر قراءة الملف. استخدم صورة واضحة أو PDF صالح.");
+    }
   };
 
   const eventPoint = (e: React.MouseEvent<SVGSVGElement>): Point => {
@@ -144,9 +144,17 @@ function App() {
       if (next.length === 2) {
         const px = dist(next[0], next[1]);
         if (px > 0 && knownMeters > 0) {
-          const mpp = knownMeters / px;
-          setMetersPerPixel(mpp);
-          setMessage(`تمت المعايرة: ${(mpp * 1000).toFixed(2)} مم لكل بكسل.`);
+          const evidence = createEvidence(next[0], next[1], knownMeters);
+          const nextEvidence = [...calibrationEvidence, evidence].slice(-6);
+          const robust = robustScale(nextEvidence);
+          setCalibrationEvidence(nextEvidence);
+          setMetersPerPixel(robust.metersPerPixel);
+          setCalibrationSpreadPct(robust.spreadPct);
+          setMessage(
+            robust.count > 1
+              ? `تمت المعايرة من ${robust.count} قياسات: ${((robust.metersPerPixel || 0) * 1000).toFixed(2)} مم/بكسل، اختلاف ${(robust.spreadPct || 0).toFixed(1)}٪.`
+              : `تمت المعايرة: ${((robust.metersPerPixel || 0) * 1000).toFixed(2)} مم لكل بكسل. أضف قياسًا ثانيًا لزيادة الثقة.`
+          );
         }
       }
       return;
@@ -329,14 +337,14 @@ function App() {
 
   function createSnapshot(includeImage = true): ProjectSnapshot {
     return {
-      version: 3,
+      version: 4,
       units: scaleReady ? "meter" : "pixel",
       image: {
         width: imageSize.w,
         height: imageSize.h,
         ...(includeImage && imageDataUrl ? { dataUrl: imageDataUrl } : {}),
       },
-      calibration: { knownMeters, metersPerPixel },
+      calibration: { knownMeters, metersPerPixel, evidence: calibrationEvidence, spreadPct: calibrationSpreadPct },
       building: { wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible },
       walls,
       openings,
@@ -361,6 +369,8 @@ function App() {
     }
     setKnownMeters(snapshot.calibration.knownMeters);
     setMetersPerPixel(snapshot.calibration.metersPerPixel);
+    setCalibrationEvidence(snapshot.calibration.evidence || []);
+    setCalibrationSpreadPct(snapshot.calibration.spreadPct ?? null);
     setWallHeight(snapshot.building.wallHeight);
     setWallThicknessM(snapshot.building.wallThicknessM);
     setStyle(snapshot.building.style);
@@ -379,7 +389,7 @@ function App() {
     if (!file) return;
     try {
       const snapshot = JSON.parse(await file.text()) as ProjectSnapshot;
-      if (!snapshot || snapshot.version !== 3 || !Array.isArray(snapshot.walls)) throw new Error("invalid");
+      if (!snapshot || ![3,4].includes(Number(snapshot.version)) || !Array.isArray(snapshot.walls)) throw new Error("invalid");
       loadSnapshot(snapshot);
     } catch {
       setMessage("ملف المشروع غير صالح أو من إصدار غير مدعوم.");
@@ -404,7 +414,7 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div>
-          <div className="brand">منزل H <span>ENGINE V2</span></div>
+          <div className="brand">منزل H <span>ENGINE V3</span></div>
           <div className="subtitle">هندسة قابلة للمراجعة • غرف تلقائية • فتحات حقيقية • هوية سعودية</div>
         </div>
         <div className="view-switch">
@@ -417,7 +427,7 @@ function App() {
       </header>
 
       <section className="toolbar">
-        <label className="upload">رفع المخطط<input type="file" accept="image/*" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
+        <label className="upload">رفع المخطط<input type="file" accept="image/*,application/pdf,.pdf" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
         <button className={tool === "calibrate" ? "active" : ""} onClick={() => { setTool("calibrate"); setCalibration([]); }}>معايرة</button>
         <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
         <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>باب</button>
@@ -544,7 +554,7 @@ function App() {
           <span><b>{openings.filter((o) => o.kind === "window").length}</b> نافذة</span>
           <span><b>{rooms.length}</b> مساحة مغلقة</span>
           <span><b>{totalRoomArea ? `${totalRoomArea.toFixed(1)} م²` : "—"}</b> مساحة داخلية</span>
-          <span><b>{scaleReady ? `${(metersPerPixel! * 1000).toFixed(2)} مم/px` : "غير معاير"}</b> مقياس</span>
+          <span><b>{scaleReady ? `${(metersPerPixel! * 1000).toFixed(2)} مم/px` : "غير معاير"}</b> مقياس</span>\n          <span><b>{calibrationEvidence.length}</b> قياسات معايرة</span>\n          <span><b>{calibrationSpreadPct == null ? "—" : `${calibrationSpreadPct.toFixed(1)}٪`}</b> اختلاف المعايرة</span>
           <span><b>{totalWallLength ? `${totalWallLength.toFixed(1)} م` : "—"}</b> أطوال الجدران</span>
         </div>
 
