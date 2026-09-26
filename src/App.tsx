@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
 import type { Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
+import { validateReconstruction } from "./validation";
 
 type Tool = "select" | "calibrate" | "wall" | "door" | "window";
 
@@ -38,6 +39,9 @@ function App() {
     [walls, metersPerPixel, scaleReady]
   );
   const totalRoomArea = useMemo(() => rooms.reduce((s, r) => s + r.areaM2, 0), [rooms]);
+  const validationIssues = useMemo(() => validateReconstruction(walls, openings, rooms, metersPerPixel), [walls, openings, rooms, metersPerPixel]);
+  const errorCount = validationIssues.filter((issue) => issue.severity === "error").length;
+  const warningCount = validationIssues.filter((issue) => issue.severity === "warning").length;
 
   useEffect(() => {
     if (!scaleReady || walls.length < 4) {
@@ -544,6 +548,17 @@ function App() {
           </div>
         )}
 
+        <div className="quality-panel">
+          <div className="quality-head">
+            <strong>فحص الهندسة</strong>
+            <span className={errorCount ? "quality-bad" : warningCount ? "quality-warn" : "quality-good"}>
+              {errorCount ? `${errorCount} خطأ` : warningCount ? `${warningCount} تنبيه` : "جاهز للمراجعة"}
+            </span>
+          </div>
+          {validationIssues.map((issue) => (
+            <div key={issue.code + issue.message} className={`quality-item ${issue.severity}`}>{issue.message}</div>
+          ))}
+        </div>
         <div className="help">الجدران الخارجية تظهر بلون مختلف. كشف الغرف يعتمد على حلقات الجدران المغلقة. حذف جدار أو فتحة: نقرتان متتاليتان عليها.</div>
       </aside>
     </div>
