@@ -500,7 +500,9 @@ function App() {
                       x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y}
                       strokeWidth={Math.max(4, w.thickness)}
                       strokeLinecap="square"
-                      className={`${exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"} ${selectedWallId === w.id ? "selected-wall" : ""}`}\n                      onClick={(e) => { if (tool === "select") { e.stopPropagation(); setSelectedWallId(w.id); } }}\n                      onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); setSelectedWallId(null); }}
+                      className={`${exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"} ${selectedWallId === w.id ? "selected-wall" : ""}`}
+                      onClick={(e) => { if (tool === "select") { e.stopPropagation(); setSelectedWallId(w.id); } }}
+                      onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); setSelectedWallId(null); }}
                     />
                     {scaleReady && dist(w.a, w.b) * metersPerPixel! >= 1 && (
                       <text
