@@ -13,6 +13,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 from house_builder import build_house_glb
 from render_images_v2 import render_exterior, render_interior
+from cloudflare_renderer import configured as cloudflare_configured, render_with_cloudflare
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Yytsi/floorplan-to-3d-walls")
 DEVICE_NAME = os.getenv("DEVICE", "auto")
@@ -136,8 +137,8 @@ def health():
         "weights": app.state.weights_name,
         "model_loaded": app.state.model is not None,
         "house_builder": True,
-        "render_platform": "server-cpu",
-        "render_configured": True,
+        "render_platform": "cloudflare-workers-ai-flux2",
+        "render_configured": cloudflare_configured(),
     }
 
 
@@ -659,10 +660,19 @@ def render_image(kind: str, payload: HouseBuildRequest):
     if kind not in ("interior", "exterior"):
         raise HTTPException(status_code=404, detail="unknown render kind")
 
+    if not cloudflare_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Cloudflare Workers AI is not configured",
+        )
+
     try:
-        png = render_interior(data, size=2048) if kind == "interior" else render_exterior(data, width=2048, height=2732)
+        png = render_with_cloudflare(kind, data)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="server render failed") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloudflare render failed: {type(exc).__name__}",
+        ) from exc
 
     return Response(
         content=png,
