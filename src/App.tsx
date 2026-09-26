@@ -6,7 +6,7 @@ import { validateReconstruction } from "./validation";
 import { analyzeWithRemote } from "./analyzer";
 import { createEvidence, robustScale } from "./calibration";
 import { rasterizePlanFile } from "./importers";
-import { downloadTextFile, exportPlanDxf } from "./exporters";
+import { downloadTextFile, exportPlanDxf, exportQuantityCsv } from "./exporters";
 
 type Tool = "select" | "calibrate" | "wall" | "door" | "window" | "column" | "stair";
 
@@ -461,6 +461,24 @@ function App() {
     setMessage("تم تصدير مخطط DXF بوحدة المتر.");
   };
 
+  const exportQuantities = () => {
+    if (!metersPerPixel) {
+      setMessage("عاير القياس قبل تصدير الكميات.");
+      return;
+    }
+    const csv = exportQuantityCsv({
+      walls,
+      openings,
+      columns,
+      stairs,
+      metersPerPixel,
+      wallHeightM: wallHeight,
+      roomAreaM2: totalRoomArea,
+    });
+    downloadTextFile(csv, "manzel-h-quantities.csv", "text/csv;charset=utf-8");
+    setMessage("تم تصدير جدول كميات مبدئي CSV.");
+  };
+
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(createSnapshot(true), null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -552,6 +570,7 @@ function App() {
         <button onClick={() => { setWalls([]); setOpenings([]); setRooms([]); setColumns([]); setStairs([]); }} disabled={!walls.length && !columns.length && !stairs.length}>مسح</button>
         <button onClick={exportJson} disabled={!walls.length}>تصدير مشروع</button>
         <button onClick={exportDxf} disabled={!walls.length || !scaleReady}>تصدير DXF</button>
+        <button onClick={exportQuantities} disabled={!walls.length || !scaleReady}>جدول كميات CSV</button>
         <button onClick={() => importRef.current?.click()}>استيراد مشروع</button>
         <input ref={importRef} hidden type="file" accept=".json,application/json" onChange={(e) => importProject(e.target.files?.[0])} />
         <button onClick={restoreAutosave}>استعادة المسودة</button>
