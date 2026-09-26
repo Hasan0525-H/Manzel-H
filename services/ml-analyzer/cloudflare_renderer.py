@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 import requests
-from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 from render_images_v2 import render_exterior, render_interior
 
@@ -231,12 +231,23 @@ def _direct_plan_references(plan_png: bytes) -> list[bytes]:
 
     image = Image.open(io.BytesIO(original)).convert("RGB")
     gray = ImageOps.autocontrast(ImageOps.grayscale(image))
-    gray = ImageEnhance.Contrast(gray).enhance(2.4)
-    blueprint = gray.point(lambda value: 255 if value > 205 else 28).convert("RGB")
 
-    out = io.BytesIO()
-    blueprint.save(out, format="PNG", optimize=True)
-    return [original, out.getvalue()]
+    contrast = ImageEnhance.Contrast(gray).enhance(2.6)
+    blueprint = contrast.point(lambda value: 255 if value > 205 else 24).convert("RGB")
+
+    edges = gray.filter(ImageFilter.FIND_EDGES)
+    edges = ImageOps.autocontrast(edges)
+    edges = ImageOps.invert(edges)
+    edges = edges.point(lambda value: 255 if value > 218 else 18).convert("RGB")
+
+    structure = blueprint.filter(ImageFilter.MinFilter(3))
+
+    refs = [original]
+    for ref in (blueprint, edges, structure):
+        out = io.BytesIO()
+        ref.save(out, format="PNG", optimize=True)
+        refs.append(out.getvalue())
+    return refs
 
 
 def _direct_plan_prompt(kind: str, options: dict[str, Any]) -> str:
