@@ -60,8 +60,10 @@ jobs:
           PY
           openssl ec -inform DER -in /tmp/manzel-h-ec.der -out /tmp/manzel-h-ec.pem
           openssl pkcs8 -topk8 -nocrypt -in /tmp/manzel-h-ec.pem -outform DER -out /tmp/manzel-h-key.pk8
-          openssl req -new -x509 -key /tmp/manzel-h-ec.pem -out /tmp/manzel-h-cert.pem -days 10000 -subj "/C=SA/O=Manzel H/CN=Manzel H"
-          openssl x509 -in /tmp/manzel-h-cert.pem -outform DER -out /tmp/manzel-h-cert.der
+          openssl x509 -in android-signing/manzel-h-cert.pem -outform DER -out /tmp/manzel-h-cert.der
+          openssl pkey -in /tmp/manzel-h-ec.pem -pubout -out /tmp/key-pub.pem
+          openssl x509 -in android-signing/manzel-h-cert.pem -pubkey -noout > /tmp/cert-pub.pem
+          cmp /tmp/key-pub.pem /tmp/cert-pub.pem
 
       - name: Sign APK
         run: |
