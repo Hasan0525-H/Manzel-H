@@ -13,7 +13,7 @@ export type AnalyzeResponse = {
   openings?: Opening[];
 };
 
-const ML_ANALYZER_URL = "https://manzel-h-ml-analyzer-v11.onrender.com";
+const ML_ANALYZER_URL = "https://manzel-h-cloud-v12.onrender.com";
 const CV_ANALYZER_URL = "https://manzel-h-analyzer-v2.onrender.com";
 
 async function callAnalyzer(
