@@ -81,11 +81,18 @@ export default function App() {
       try {
         const remote = await analyzeWithRemote(dataUrl, scale);
         if (remote?.walls?.length) {
-          const canonical = canonicalizeAndInferOpenings(remote.walls, scale);
-          result = {
-            walls: snapOrthogonalIntersections(canonical.walls, scale),
-            openings: canonical.openings,
-          };
+          if (remote.engine === "cubicasa-resnet34-unet" && remote.openings?.length) {
+            result = {
+              walls: snapOrthogonalIntersections(remote.walls, scale),
+              openings: remote.openings,
+            };
+          } else {
+            const canonical = canonicalizeAndInferOpenings(remote.walls, scale);
+            result = {
+              walls: snapOrthogonalIntersections(canonical.walls, scale),
+              openings: canonical.openings,
+            };
+          }
         }
       } catch {
         // local fallback
