@@ -18,13 +18,10 @@ MODEL = os.getenv(
     "CLOUDFLARE_MODEL",
     "@cf/black-forest-labs/flux-2-klein-9b",
 )
-FALLBACK_MODEL = os.getenv(
-    "CLOUDFLARE_FALLBACK_MODEL",
-    "@cf/black-forest-labs/flux-2-klein-4b",
-)
 ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
-TIMEOUT_SECONDS = int(os.getenv("CLOUDFLARE_RENDER_TIMEOUT", "150"))
+TIMEOUT_SECONDS = int(os.getenv("CLOUDFLARE_RENDER_TIMEOUT", "240"))
+MAX_RETRIES = max(1, min(4, int(os.getenv("CLOUDFLARE_MAX_RETRIES", "3"))))
 LOGGER = logging.getLogger("manzel.cloudflare")
 
 
@@ -36,8 +33,8 @@ def primary_model() -> str:
     return MODEL
 
 
-def fallback_model() -> str:
-    return FALLBACK_MODEL
+def fallback_model() -> None:
+    return None
 
 
 def _floorplan_reference(payload: dict[str, Any], size: int = 480) -> bytes:
@@ -339,20 +336,39 @@ def render_plan_with_cloudflare(kind: str, plan_png: bytes, options: dict[str, A
         )
         return response
 
-    response = run_model(MODEL)
-    if (
-        response.status_code in (429, 500, 502, 503, 504)
-        and FALLBACK_MODEL
-        and FALLBACK_MODEL != MODEL
-    ):
+    retryable = {429, 500, 502, 503, 504}
+    response = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = run_model(MODEL)
+        except requests.RequestException as exc:
+            LOGGER.warning(
+                "cloudflare_direct_retry model=%s attempt=%s/%s reason=%s",
+                MODEL,
+                attempt,
+                MAX_RETRIES,
+                type(exc).__name__,
+            )
+            if attempt >= MAX_RETRIES:
+                raise RuntimeError("Cloudflare Workers AI request failed") from exc
+            time.sleep(min(8.0, 1.5 * (2 ** (attempt - 1))))
+            continue
+
+        if response.status_code not in retryable or attempt >= MAX_RETRIES:
+            break
+
         LOGGER.warning(
-            "cloudflare_direct_fallback primary=%s fallback=%s status=%s ray=%s",
+            "cloudflare_direct_retry model=%s attempt=%s/%s status=%s ray=%s",
             MODEL,
-            FALLBACK_MODEL,
+            attempt,
+            MAX_RETRIES,
             response.status_code,
             response.headers.get("cf-ray", "-"),
         )
-        response = run_model(FALLBACK_MODEL)
+        time.sleep(min(8.0, 1.5 * (2 ** (attempt - 1))))
+
+    if response is None:
+        raise RuntimeError("Cloudflare Workers AI returned no response")
 
     if response.status_code >= 400:
         detail = response.text[:700].replace("\n", " ")
@@ -416,20 +432,39 @@ def render_with_cloudflare(kind: str, payload: dict[str, Any]) -> bytes:
         )
         return response, elapsed
 
-    response, _ = run_model(MODEL)
-    if (
-        response.status_code in (429, 500, 502, 503, 504)
-        and FALLBACK_MODEL
-        and FALLBACK_MODEL != MODEL
-    ):
+    retryable = {429, 500, 502, 503, 504}
+    response = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response, _ = run_model(MODEL)
+        except requests.RequestException as exc:
+            LOGGER.warning(
+                "cloudflare_render_retry model=%s attempt=%s/%s reason=%s",
+                MODEL,
+                attempt,
+                MAX_RETRIES,
+                type(exc).__name__,
+            )
+            if attempt >= MAX_RETRIES:
+                raise RuntimeError("Cloudflare Workers AI request failed") from exc
+            time.sleep(min(8.0, 1.5 * (2 ** (attempt - 1))))
+            continue
+
+        if response.status_code not in retryable or attempt >= MAX_RETRIES:
+            break
+
         LOGGER.warning(
-            "cloudflare_primary_fallback primary=%s fallback=%s status=%s ray=%s",
+            "cloudflare_render_retry model=%s attempt=%s/%s status=%s ray=%s",
             MODEL,
-            FALLBACK_MODEL,
+            attempt,
+            MAX_RETRIES,
             response.status_code,
             response.headers.get("cf-ray", "-"),
         )
-        response, _ = run_model(FALLBACK_MODEL)
+        time.sleep(min(8.0, 1.5 * (2 ** (attempt - 1))))
+
+    if response is None:
+        raise RuntimeError("Cloudflare Workers AI returned no response")
 
     if response.status_code >= 400:
         detail = response.text[:700].replace("\n", " ")
