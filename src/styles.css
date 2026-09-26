@@ -76,3 +76,13 @@ button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
   .toolbar { padding: 10px; gap: 6px; }
   button, .upload { padding: 9px 10px; font-size: 13px; }
 }
+
+.opening {
+  stroke: #fff;
+  stroke-width: 12px;
+  stroke-linecap: butt;
+  filter: drop-shadow(0 0 2px rgba(0,0,0,.35));
+  pointer-events: stroke;
+}
+.door-opening { stroke: #f59e0b; }
+.window-opening { stroke: #38bdf8; }
