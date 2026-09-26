@@ -101,7 +101,7 @@ MODEL_LOCK = threading.Lock()
 app = FastAPI(title="Manzel H ML Analyzer", version="1.2.0")
 app.state.model = None
 app.state.image_size = (512, 512)
-app.state.device = choose_device()
+app.state.device = DEVICE_NAME if DEVICE_NAME != "auto" else "cpu"
 app.state.weights_name = None
 
 
