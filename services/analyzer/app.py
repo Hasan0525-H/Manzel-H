@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import io
 import math
+import os
 from typing import Literal
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image
 
 app = FastAPI(title="Manzel H Analyzer", version="0.1.0")
+
+allowed_origin = os.getenv("ALLOWED_ORIGIN", "*")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[allowed_origin] if allowed_origin != "*" else ["*"],
+    allow_credentials=allowed_origin != "*",
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 class Point(BaseModel):
