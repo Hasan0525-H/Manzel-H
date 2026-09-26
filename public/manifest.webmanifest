@@ -1,11 +1,10 @@
 {
-  "name": "Manzel H",
-  "short_name": "Manzel H",
+  "name": "منزل H",
+  "short_name": "منزل H",
   "lang": "ar",
   "dir": "rtl",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#111a29",
-  "theme_color": "#111a29",
-  "description": "تحويل المخطط 2D إلى منزل 3D هندسي قابل للمراجعة"
+  "background_color": "#f6f6f4",
+  "theme_color": "#f6f6f4"
 }
