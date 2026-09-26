@@ -17,4 +17,4 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m py_compile services/analyzer/app.py services/ml-analyzer/app.py services/ml-analyzer/house_builder.py services/ml-analyzer/render_images.py services/ml-analyzer/render_images_v2.py services/render-gateway/app.py
+      - run: python -m py_compile services/analyzer/app.py services/ml-analyzer/app.py services/ml-analyzer/house_builder.py services/ml-analyzer/render_images.py services/ml-analyzer/render_images_v2.py services/ml-analyzer/cloudflare_renderer.py services/render-gateway/app.py
