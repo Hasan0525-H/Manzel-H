@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapOrthogonalIntersections, snapPoint } from "./geometry";
-import type { CalibrationEvidence, Column, Opening, Point, ProjectSnapshot, Room, Stair, Wall } from "./types";
+import type { CalibrationEvidence, Column, FloorLevel, Opening, Point, ProjectSnapshot, Room, Stair, Wall } from "./types";
 import { validateReconstruction } from "./validation";
 import { analyzeWithRemote } from "./analyzer";
 import { createEvidence, robustScale } from "./calibration";
@@ -21,6 +21,8 @@ function App() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [columns, setColumns] = useState<Column[]>([]);
   const [stairs, setStairs] = useState<Stair[]>([]);
+  const [floors, setFloors] = useState<FloorLevel[]>([]);
+  const [activeFloorId, setActiveFloorId] = useState<string>("floor-1");
   const [exteriorWallIds, setExteriorWallIds] = useState<string[]>([]);
   const [roomNames, setRoomNames] = useState<Record<string, string>>({});
   const [tool, setTool] = useState<Tool>("select");
@@ -55,6 +57,107 @@ function App() {
   const validationIssues = useMemo(() => validateReconstruction(walls, openings, rooms, metersPerPixel), [walls, openings, rooms, metersPerPixel]);
   const errorCount = validationIssues.filter((issue) => issue.severity === "error").length;
   const warningCount = validationIssues.filter((issue) => issue.severity === "warning").length;
+
+  const currentFloor = (): FloorLevel => {
+    const existing = floors.find((f) => f.id === activeFloorId);
+    return {
+      id: activeFloorId,
+      name: existing?.name || "الدور الأرضي",
+      elevationM: existing?.elevationM ?? 0,
+      heightM: wallHeight,
+      image: {
+        width: imageSize.w,
+        height: imageSize.h,
+        ...(imageDataUrl ? { dataUrl: imageDataUrl } : {}),
+      },
+      calibration: {
+        knownMeters,
+        metersPerPixel,
+        evidence: calibrationEvidence,
+        spreadPct: calibrationSpreadPct,
+      },
+      walls,
+      openings,
+      rooms,
+      columns,
+      stairs,
+      floors: (() => { const active = currentFloor(); const list = floors.some((f) => f.id === active.id) ? floors.map((f) => f.id === active.id ? active : f) : [...floors, active]; return list; })(),
+      activeFloorId,
+    };
+  };
+
+  const syncActiveFloor = () => {
+    const floor = currentFloor();
+    setFloors((items) => {
+      const exists = items.some((f) => f.id === floor.id);
+      return exists ? items.map((f) => f.id === floor.id ? floor : f) : [...items, floor];
+    });
+    return floor;
+  };
+
+  const loadFloor = (floor: FloorLevel) => {
+    setActiveFloorId(floor.id);
+    setImageSize({ w: floor.image.width, h: floor.image.height });
+    setImageDataUrl(floor.image.dataUrl || "");
+    setImageUrl(floor.image.dataUrl || "");
+    setKnownMeters(floor.calibration.knownMeters);
+    setMetersPerPixel(floor.calibration.metersPerPixel);
+    setCalibrationEvidence(floor.calibration.evidence || []);
+    setCalibrationSpreadPct(floor.calibration.spreadPct ?? null);
+    setWallHeight(floor.heightM || 3.2);
+    setWalls(floor.walls || []);
+    setOpenings(floor.openings || []);
+    setColumns(floor.columns || []);
+    setStairs(floor.stairs || []);
+    const names: Record<string, string> = {};
+    for (const room of floor.rooms || []) names[roomKey(room)] = room.name;
+    setRoomNames(names);
+    setSelectedWallId(null);
+    setSelectedOpeningId(null);
+    setSelectedColumnId(null);
+    setSelectedStairId(null);
+  };
+
+  const switchFloor = (id: string) => {
+    const current = syncActiveFloor();
+    const target = floors.find((f) => f.id === id);
+    if (target) loadFloor(target);
+    else if (current.id === id) loadFloor(current);
+  };
+
+  const duplicateFloor = () => {
+    const source = currentFloor();
+    const nextIndex = Math.max(1, floors.length + 1);
+    const id = `floor-${Date.now()}`;
+    const elevationM = (source.elevationM || 0) + source.heightM;
+    const clone: FloorLevel = {
+      ...source,
+      id,
+      name: `الدور ${nextIndex}`,
+      elevationM,
+      walls: source.walls.map((w) => ({ ...w, id: uid(), a: { ...w.a }, b: { ...w.b } })),
+      openings: [],
+      columns: source.columns.map((col) => ({ ...col, id: uid(), point: { ...col.point } })),
+      stairs: source.stairs.map((stair) => ({ ...stair, id: uid(), origin: { ...stair.origin } })),
+      rooms: source.rooms.map((room) => ({ ...room, id: uid(), cells: room.cells.map((cell) => ({ ...cell })), centroid: { ...room.centroid } })),
+    };
+    const wallMap = new Map(source.walls.map((w, i) => [w.id, clone.walls[i]?.id]));
+    clone.openings = source.openings.map((o) => ({ ...o, id: uid(), wallId: wallMap.get(o.wallId) || o.wallId }));
+    setFloors((items) => {
+      const synced = items.some((f) => f.id === source.id) ? items.map((f) => f.id === source.id ? source : f) : [...items, source];
+      return [...synced, clone];
+    });
+    loadFloor(clone);
+    setMessage("تم إنشاء طابق جديد من نسخة الطابق الحالي.");
+  };
+
+  const renameActiveFloor = (name: string) => {
+    setFloors((items) => items.map((f) => f.id === activeFloorId ? { ...f, name } : f));
+  };
+
+  const updateActiveFloorElevation = (elevationM: number) => {
+    setFloors((items) => items.map((f) => f.id === activeFloorId ? { ...f, elevationM } : f));
+  };
 
   useEffect(() => {
     if (!scaleReady || walls.length < 4) {
@@ -93,6 +196,14 @@ function App() {
       setCalibrationEvidence([]);
       setCalibrationSpreadPct(null);
       setMetersPerPixel(null);
+      const ground: FloorLevel = {
+        id: "floor-1", name: "الدور الأرضي", elevationM: 0, heightM: wallHeight,
+        image: { width: raster.width, height: raster.height, dataUrl: raster.dataUrl },
+        calibration: { knownMeters, metersPerPixel: null, evidence: [], spreadPct: null },
+        walls: [], openings: [], rooms: [], columns: [], stairs: []
+      };
+      setFloors([ground]);
+      setActiveFloorId(ground.id);
       setMessage(raster.sourceType === "pdf"
         ? "تم تحميل الصفحة الأولى من PDF. عاير بعدًا معروفًا ثم شغّل التحليل."
         : "تم رفع المخطط. عاير القياس أولاً للحصول على أبعاد حقيقية.");
@@ -434,7 +545,7 @@ function App() {
 
   function createSnapshot(includeImage = true): ProjectSnapshot {
     return {
-      version: 5,
+      version: 6,
       units: scaleReady ? "meter" : "pixel",
       image: {
         width: imageSize.w,
@@ -509,6 +620,28 @@ function App() {
     setOpenings(snapshot.openings || []);
     setColumns(snapshot.columns || []);
     setStairs(snapshot.stairs || []);
+    if (snapshot.floors?.length) {
+      setFloors(snapshot.floors);
+      const targetId = snapshot.activeFloorId || snapshot.floors[0].id;
+      const target = snapshot.floors.find((f) => f.id === targetId) || snapshot.floors[0];
+      loadFloor(target);
+    } else {
+      const legacyFloor: FloorLevel = {
+        id: "floor-1",
+        name: "الدور الأرضي",
+        elevationM: 0,
+        heightM: snapshot.building.wallHeight,
+        image: snapshot.image,
+        calibration: snapshot.calibration,
+        walls: snapshot.walls || [],
+        openings: snapshot.openings || [],
+        rooms: snapshot.rooms || [],
+        columns: snapshot.columns || [],
+        stairs: snapshot.stairs || [],
+      };
+      setFloors([legacyFloor]);
+      setActiveFloorId(legacyFloor.id);
+    }
     const names: Record<string, string> = {};
     for (const room of snapshot.rooms || []) names[roomKey(room)] = room.name;
     setRoomNames(names);
@@ -519,7 +652,7 @@ function App() {
     if (!file) return;
     try {
       const snapshot = JSON.parse(await file.text()) as ProjectSnapshot;
-      if (!snapshot || ![3,4,5].includes(Number(snapshot.version)) || !Array.isArray(snapshot.walls)) throw new Error("invalid");
+      if (!snapshot || ![3,4,5,6].includes(Number(snapshot.version)) || !Array.isArray(snapshot.walls)) throw new Error("invalid");
       loadSnapshot(snapshot);
     } catch {
       setMessage("ملف المشروع غير صالح أو من إصدار غير مدعوم.");
@@ -544,7 +677,7 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div>
-          <div className="brand">منزل H <span>ENGINE V6</span></div>
+          <div className="brand">منزل H <span>ENGINE V7</span></div>
           <div className="subtitle">هندسة قابلة للمراجعة • غرف تلقائية • فتحات حقيقية • هوية سعودية</div>
         </div>
         <div className="view-switch">
@@ -555,6 +688,17 @@ function App() {
           ))}
         </div>
       </header>
+
+      <section className="floorbar">
+        <div className="floor-tabs">
+          {(floors.length ? floors : [currentFloor()]).map((floor) => (
+            <button key={floor.id} className={activeFloorId === floor.id ? "active" : ""} onClick={() => switchFloor(floor.id)}>
+              {floor.name}
+            </button>
+          ))}
+        </div>
+        <button onClick={duplicateFloor}>نسخ كطابق جديد</button>
+      </section>
 
       <section className="toolbar">
         <label className="upload">رفع المخطط<input type="file" accept="image/*,application/pdf,.pdf" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
@@ -723,12 +867,26 @@ function App() {
               columns={columns}
               stairs={stairs}
               furnitureVisible={furnitureVisible}
+              floorElevationM={floors.find((f) => f.id === activeFloorId)?.elevationM ?? 0}
+              otherFloors={floors.filter((f) => f.id !== activeFloorId)}
             />
           </section>
         )}
       </main>
 
       <aside className="inspector">
+        <div className="floor-editor">
+          <strong>الطابق الحالي</strong>
+          <label>الاسم
+            <input value={(floors.find((f) => f.id === activeFloorId)?.name) || "الدور الأرضي"} onChange={(e) => renameActiveFloor(e.target.value)} />
+          </label>
+          <label>المنسوب (م)
+            <input type="number" step="0.01" value={floors.find((f) => f.id === activeFloorId)?.elevationM ?? 0}
+              onChange={(e) => updateActiveFloorElevation(Number(e.target.value))} />
+          </label>
+          <span className="floor-count">{Math.max(1, floors.length)} طابق</span>
+        </div>
+
         <div className="inspector-grid">
           <label>البُعد المعروف (م)
             <input type="number" step="0.01" value={knownMeters} onChange={(e) => setKnownMeters(Number(e.target.value))} />
@@ -936,6 +1094,8 @@ function ThreePreview(props: {
   columns: Column[];
   stairs: Stair[];
   furnitureVisible: boolean;
+  floorElevationM: number;
+  otherFloors: FloorLevel[];
 }) {
   const mount = useRef<HTMLDivElement | null>(null);
   const exportRoot = useRef<THREE.Group | null>(null);
@@ -1206,7 +1366,30 @@ function ThreePreview(props: {
       }
     }
 
+    group.position.y = props.floorElevationM;
     scene.add(group);
+
+    const ghostMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.85, transparent: true, opacity: 0.38 });
+    for (const floor of props.otherFloors) {
+      const floorScale = floor.calibration.metersPerPixel ?? scale;
+      const floorCx = floor.image.width * floorScale / 2;
+      const floorCy = floor.image.height * floorScale / 2;
+      const ghost = new THREE.Group();
+      ghost.position.y = floor.elevationM;
+      for (const wall of floor.walls) {
+        const ax = wall.a.x * floorScale - floorCx, az = wall.a.y * floorScale - floorCy;
+        const bx = wall.b.x * floorScale - floorCx, bz = wall.b.y * floorScale - floorCy;
+        const dx = bx - ax, dz = bz - az;
+        const len = Math.hypot(dx, dz);
+        if (len < 0.05) continue;
+        const thickness = Math.max(0.08, wall.thickness * floorScale);
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(len, floor.heightM, thickness), ghostMat);
+        mesh.position.set((ax + bx) / 2, floor.heightM / 2, (az + bz) / 2);
+        mesh.rotation.y = -Math.atan2(dz, dx);
+        ghost.add(mesh);
+      }
+      scene.add(ghost);
+    }
 
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(planW + 12, planH + 12),
@@ -1299,6 +1482,8 @@ function ThreePreview(props: {
     props.columns,
     props.stairs,
     props.furnitureVisible,
+    props.floorElevationM,
+    props.otherFloors,
   ]);
 
   return (
