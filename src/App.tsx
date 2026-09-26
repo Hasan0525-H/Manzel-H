@@ -406,7 +406,7 @@ export default function App() {
             {exteriorUrl && <button className={resultTab === "exterior" ? "active" : ""} onClick={() => setResultTab("exterior")}>واجهة</button>}
           </nav>
         </main>
-      )}}
+      )}
     </div>
   );
 }
