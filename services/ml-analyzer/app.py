@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import math
 import os
-from contextlib import asynccontextmanager
+import threading
 
 import cv2
 import numpy as np
@@ -99,17 +99,26 @@ def build_model():
     return model, size, device, weights_name
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    model, image_size, device, weights_name = build_model()
-    app.state.model = model
-    app.state.image_size = image_size
-    app.state.device = device
-    app.state.weights_name = weights_name
-    yield
+MODEL_LOCK = threading.Lock()
+
+app = FastAPI(title="Manzel H ML Analyzer", version="1.2.0")
+app.state.model = None
+app.state.image_size = (512, 512)
+app.state.device = choose_device()
+app.state.weights_name = None
 
 
-app = FastAPI(title="Manzel H ML Analyzer", version="1.1.0", lifespan=lifespan)
+def ensure_model():
+    if app.state.model is not None:
+        return
+    with MODEL_LOCK:
+        if app.state.model is not None:
+            return
+        model, image_size, device, weights_name = build_model()
+        app.state.model = model
+        app.state.image_size = image_size
+        app.state.device = device
+        app.state.weights_name = weights_name
 allowed_origin = os.getenv("ALLOWED_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
@@ -128,6 +137,8 @@ def health():
         "device": str(app.state.device),
         "image_size": list(app.state.image_size),
         "weights": app.state.weights_name,
+        "model_loaded": app.state.model is not None,
+        "house_builder": True,
     }
 
 
@@ -149,6 +160,7 @@ def letterbox(image: np.ndarray, out_h: int, out_w: int):
 
 
 def infer_mask(image_rgb: np.ndarray):
+    ensure_model()
     out_h, out_w = app.state.image_size
     canvas, scale, left, top, inner_w, inner_h = letterbox(image_rgb, out_h, out_w)
 
