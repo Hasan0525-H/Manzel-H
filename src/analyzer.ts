@@ -5,15 +5,20 @@ type AnalyzerWall = Wall & {
   orientation: "horizontal" | "vertical" | "diagonal";
 };
 
-type AnalyzeResponse = {
+export type AnalyzeResponse = {
   width: number;
   height: number;
   walls: AnalyzerWall[];
 };
 
-export async function analyzeWithRemote(imageUrl: string): Promise<AnalyzeResponse | null> {
-  const base = import.meta.env.VITE_ANALYZER_URL?.trim();
-  if (!base) return null;
+const DEFAULT_ANALYZER_URL = "https://manzel-h-analyzer.onrender.com";
+
+export async function analyzeWithRemote(
+  imageUrl: string,
+  metersPerPixel?: number | null,
+): Promise<AnalyzeResponse | null> {
+  const configured = import.meta.env.VITE_ANALYZER_URL?.trim();
+  const base = configured || DEFAULT_ANALYZER_URL;
 
   const imageResponse = await fetch(imageUrl);
   if (!imageResponse.ok) throw new Error("تعذر قراءة صورة المخطط");
@@ -21,9 +26,12 @@ export async function analyzeWithRemote(imageUrl: string): Promise<AnalyzeRespon
 
   const body = new FormData();
   body.append("file", blob, "floorplan.png");
+  if (metersPerPixel && metersPerPixel > 0) {
+    body.append("meters_per_pixel", String(metersPerPixel));
+  }
 
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 30000);
+  const timer = window.setTimeout(() => controller.abort(), 45000);
   try {
     const response = await fetch(`${base.replace(/\/$/, "")}/analyze`, {
       method: "POST",
