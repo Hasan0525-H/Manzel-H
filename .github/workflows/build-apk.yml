@@ -37,11 +37,6 @@ jobs:
       - name: Sync Android
         run: npx cap sync android
 
-      - name: Add bundled visual asset pack
-        run: |
-          mkdir -p android/app/src/main/assets
-          dd if=/dev/urandom of=android/app/src/main/assets/manzel-h-visual-pack.bin bs=1M count=270 status=progress
-          printf '{"name":"Manzel H bundled visual asset pack","sizeMiB":270,"processing":"cloud-only"}\n' > android/app/src/main/assets/manzel-h-visual-pack.json
 
       - name: Set Android version
         run: |
@@ -80,15 +75,6 @@ jobs:
           "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" sign --key /tmp/manzel-h-key.pk8 --cert /tmp/manzel-h-cert.der --out Manzel-H.apk "$ALIGNED"
           "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs Manzel-H.apk
 
-      - name: Verify APK is larger than 250 MiB
-        run: |
-          SIZE_BYTES=$(stat -c%s Manzel-H.apk)
-          MIN_BYTES=$((250 * 1024 * 1024))
-          echo "APK size: $((SIZE_BYTES / 1024 / 1024)) MiB"
-          if [ "$SIZE_BYTES" -le "$MIN_BYTES" ]; then
-            echo "APK is smaller than required 250 MiB"
-            exit 1
-          fi
 
       - uses: actions/upload-artifact@v4
         with:
