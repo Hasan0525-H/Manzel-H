@@ -16,6 +16,24 @@ export type Wall = {
 
 export type OpeningKind = "door" | "window";
 
+export type Column = {
+  id: string;
+  point: Point;
+  widthM: number;
+  depthM: number;
+  heightM: number;
+};
+
+export type Stair = {
+  id: string;
+  origin: Point;
+  widthM: number;
+  runM: number;
+  riseM: number;
+  steps: number;
+  rotationDeg: number;
+};
+
 export type Opening = {
   id: string;
   wallId: string;
@@ -43,11 +61,13 @@ export type Room = {
 
 export type Reconstruction = {
   rooms: Room[];
+  columns?: Column[];
+  stairs?: Stair[];
   exteriorWallIds: string[];
 };
 
 export type ProjectSnapshot = {
-  version: 3 | 4;
+  version: 3 | 4 | 5;
   units: "meter" | "pixel";
   image: { width: number; height: number; dataUrl?: string };
   calibration: { knownMeters: number; metersPerPixel: number | null; evidence?: CalibrationEvidence[]; spreadPct?: number | null };
@@ -58,6 +78,7 @@ export type ProjectSnapshot = {
     ceilingVisible: boolean;
     roofVisible: boolean;
     siteWallVisible: boolean;
+    furnitureVisible?: boolean;
   };
   walls: Wall[];
   openings: Opening[];
