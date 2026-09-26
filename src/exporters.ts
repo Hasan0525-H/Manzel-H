@@ -146,3 +146,37 @@ export function downloadTextFile(content: string, filename: string, mime = "text
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+
+export function exportQuantityCsv(args: {
+  walls: Wall[];
+  openings: Opening[];
+  columns: Column[];
+  stairs: Stair[];
+  metersPerPixel: number;
+  wallHeightM: number;
+  roomAreaM2: number;
+}) {
+  const { walls, openings, columns, stairs, metersPerPixel, wallHeightM, roomAreaM2 } = args;
+  const wallLengthM = walls.reduce((sum, wall) => sum + dist(wall.a, wall.b) * metersPerPixel, 0);
+  const grossWallAreaM2 = wallLengthM * wallHeightM;
+  const openingAreaM2 = openings.reduce((sum, o) => sum + o.widthM * o.heightM, 0);
+  const netWallAreaM2 = Math.max(0, grossWallAreaM2 - openingAreaM2);
+  const doors = openings.filter((o) => o.kind === "door").length;
+  const windows = openings.filter((o) => o.kind === "window").length;
+
+  const rows = [
+    ["البند","القيمة","الوحدة"],
+    ["إجمالي أطوال الجدران", wallLengthM.toFixed(3), "م"],
+    ["مساحة الجدران الإجمالية", grossWallAreaM2.toFixed(3), "م²"],
+    ["مساحة الفتحات", openingAreaM2.toFixed(3), "م²"],
+    ["مساحة الجدران الصافية", netWallAreaM2.toFixed(3), "م²"],
+    ["مساحة الغرف المكتشفة", roomAreaM2.toFixed(3), "م²"],
+    ["عدد الأبواب", String(doors), "عدد"],
+    ["عدد النوافذ", String(windows), "عدد"],
+    ["عدد الأعمدة", String(columns.length), "عدد"],
+    ["عدد السلالم", String(stairs.length), "عدد"],
+  ];
+
+  return "\ufeff" + rows.map((row) => row.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+}
