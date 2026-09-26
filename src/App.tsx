@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { analyzeWithRemote } from "./analyzer";
 import { createEvidence, robustScale } from "./calibration";
 import { downloadTextFile, exportPlanDxf, exportQuantityCsv } from "./exporters";
-import { detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
+import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapOrthogonalIntersections, snapPoint } from "./geometry";
 import { rasterizePlanFile } from "./importers";
 import { analyzePlanLocally } from "./planAnalysis";
 import ThreeScene from "./ThreeScene";
@@ -267,7 +267,13 @@ export default function App() {
       let result: { walls: Wall[]; openings: Opening[] } | null = null;
       try {
         const remote = await analyzeWithRemote(imageUrl);
-        if (remote?.walls?.length) result = await analyzePlanLocally(imageUrl, metersPerPixel, wallThicknessM);
+        if (remote?.walls?.length) {
+          const canonical = canonicalizeAndInferOpenings(remote.walls, metersPerPixel);
+          result = {
+            walls: snapOrthogonalIntersections(canonical.walls, metersPerPixel),
+            openings: canonical.openings,
+          };
+        }
       } catch {
         // local fallback below
       }
