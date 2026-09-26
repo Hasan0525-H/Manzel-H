@@ -70,7 +70,7 @@ function App() {
       localStorage.setItem("manzel-h-autosave", JSON.stringify(snapshot));
     }, 500);
     return () => clearTimeout(id);
-  }, [walls, openings, rooms, metersPerPixel, wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible]);
+  }, [walls, openings, rooms, columns, stairs, metersPerPixel, wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible, furnitureVisible]);
 
   const onUpload = async (file?: File) => {
     if (!file) return;
@@ -606,17 +606,21 @@ function App() {
                 })}
                 {calibration.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="10" className="cal-point" />)}
                 {calibration.length === 2 && <line x1={calibration[0].x} y1={calibration[0].y} x2={calibration[1].x} y2={calibration[1].y} className="cal-line" />}
-                {columns.map((col) => (
-                  <rect
-                    key={col.id}
-                    x={col.point.x - (col.widthM / metersPerPixel!) / 2}
-                    y={col.point.y - (col.depthM / metersPerPixel!) / 2}
-                    width={scaleReady ? col.widthM / metersPerPixel! : 16}
-                    height={scaleReady ? col.depthM / metersPerPixel! : 16}
-                    className="column-mark"
-                    onDoubleClick={(e) => { e.stopPropagation(); setColumns((items) => items.filter((x) => x.id !== col.id)); }}
-                  />
-                ))}
+                {columns.map((col) => {
+                  const w = scaleReady ? col.widthM / metersPerPixel! : 16;
+                  const h = scaleReady ? col.depthM / metersPerPixel! : 16;
+                  return (
+                    <rect
+                      key={col.id}
+                      x={col.point.x - w / 2}
+                      y={col.point.y - h / 2}
+                      width={w}
+                      height={h}
+                      className="column-mark"
+                      onDoubleClick={(e) => { e.stopPropagation(); setColumns((items) => items.filter((x) => x.id !== col.id)); }}
+                    />
+                  );
+                })}
                 {stairs.map((stair) => {
                   const w = scaleReady ? stair.widthM / metersPerPixel! : 50;
                   const h = scaleReady ? stair.runM / metersPerPixel! : 120;
