@@ -104,22 +104,24 @@ export default function App() {
       startProgress();
       setPhase("building");
 
-      const tasks: Array<Promise<{ kind: ResultTab; url: string }>> = [];
-      if (options.outputs.includes("interior")) {
-        tasks.push(renderImageInCloud("interior", args).then((url) => ({ kind: "interior", url })));
-      }
-      if (options.outputs.includes("exterior")) {
-        tasks.push(renderImageInCloud("exterior", args).then((url) => ({ kind: "exterior", url })));
-      }
-
-      const settled = await Promise.allSettled(tasks);
       let interior: string | null = null;
       let exterior: string | null = null;
 
-      for (const item of settled) {
-        if (item.status !== "fulfilled") continue;
-        if (item.value.kind === "interior") interior = item.value.url;
-        if (item.value.kind === "exterior") exterior = item.value.url;
+      // Render sequentially to avoid bursting the free AI quota/concurrency.
+      // Quality is preferred over speed: give the primary 9B model one job at a time.
+      if (options.outputs.includes("interior")) {
+        try {
+          interior = await renderImageInCloud("interior", args);
+        } catch {
+          interior = null;
+        }
+      }
+      if (options.outputs.includes("exterior")) {
+        try {
+          exterior = await renderImageInCloud("exterior", args);
+        } catch {
+          exterior = null;
+        }
       }
 
       if (!interior && !exterior) throw new Error("render-unavailable");
