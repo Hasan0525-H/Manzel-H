@@ -420,7 +420,6 @@ export default function App() {
                 wallThicknessM={wallThicknessM}
                 style={options.style}
                 mode="real"
-                showExports
                 modelUrl={cloudModelUrl || undefined}
               />
             )}
