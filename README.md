@@ -41,8 +41,7 @@
 - فحص هندسي للمشاكل الأساسية قبل اعتماد 3D.
 - حفظ تلقائي محلي.
 - تصدير/استيراد مشروع JSON v3 مع صورة المصدر.
-- PWA قابلة للتثبيت والعمل دون اتصال بعد أول تحميل.
-- CI يبني المشروع عند كل Pull Request وPush.
+- PWA قابلة للتثبيت والعمل دون اتصال بعد أول تحميل.\n- تصدير النموذج الحالي كملف GLB.\n- محلل FastAPI + OpenCV اختياري للمخططات المعقدة مع fallback محلي في المتصفح.\n- CI يبني الواجهة ويتحقق من Syntax خدمة التحليل عند كل Pull Request وPush.
 
 ## التشغيل
 
@@ -64,7 +63,7 @@ src/App.tsx         واجهة التحرير وعارض 3D
 src/geometry.ts     Canonical geometry + room topology + opening inference
 src/types.ts        عقود البيانات
 src/validation.ts   فحص جودة reconstruction
-public/sw.js        Offline shell
+public/sw.js        Offline shell\nservices/analyzer    FastAPI + OpenCV wall analyzer
 ```
 
 ## ما الذي يعتبر "دقيقاً"؟
@@ -100,3 +99,20 @@ public/sw.js        Offline shell
 ## معيار النجاح
 
 النجاح = **هندسة صحيحة أولاً، واقعية بصرية ثانياً**.
+
+
+## تشغيل المحلل الاختياري
+
+```bash
+cd services/analyzer
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+ثم في الواجهة:
+
+```bash
+VITE_ANALYZER_URL=http://localhost:8000 npm run dev
+```
+
+عند نشر المحلل على نطاق مختلف اضبط `ALLOWED_ORIGIN` على رابط الواجهة. إذا لم يتم ضبط `VITE_ANALYZER_URL` تستمر الواجهة باستخدام التحليل المحلي تلقائياً.
