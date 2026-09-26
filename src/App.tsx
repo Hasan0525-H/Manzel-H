@@ -580,6 +580,27 @@ function ThreePreview(props: {
   siteWallVisible: boolean;
 }) {
   const mount = useRef<HTMLDivElement | null>(null);
+  const exportRoot = useRef<THREE.Group | null>(null);
+
+  const exportGlb = async () => {
+    if (!exportRoot.current) return;
+    const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
+    const exporter = new GLTFExporter();
+    exporter.parse(
+      exportRoot.current,
+      (result) => {
+        if (!(result instanceof ArrayBuffer)) return;
+        const blob = new Blob([result], { type: "model/gltf-binary" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "manzel-h-house.glb";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      },
+      (error) => console.error(error),
+      { binary: true, onlyVisible: true }
+    );
+  };
 
   useEffect(() => {
     if (!mount.current) return;
@@ -607,6 +628,7 @@ function ThreePreview(props: {
     const cx = props.imageSize.w * scale / 2;
     const cy = props.imageSize.h * scale / 2;
     const group = new THREE.Group();
+    exportRoot.current = group;
 
     const palette: Record<string, { wall: number; accent: number; floor: number; roof: number }> = {
       "سعودي حديث": { wall: 0xe7dfd2, accent: 0x6d5841, floor: 0xd6c8b5, roof: 0xc8b89f },
@@ -816,6 +838,7 @@ function ThreePreview(props: {
     return () => {
       cancelAnimationFrame(frame);
       resize.disconnect();
+      exportRoot.current = null;
       renderer.dispose();
       renderer.domElement.removeEventListener("pointerdown", down);
       renderer.domElement.removeEventListener("pointermove", move);
@@ -840,6 +863,9 @@ function ThreePreview(props: {
   return (
     <div className="three-wrap" ref={mount}>
       {!props.walls.length && <div className="three-hint">اكتشف أو ارسم الجدران لتظهر هنا</div>}
+      <div className="three-actions">
+        <button onClick={exportGlb} disabled={!props.walls.length}>تصدير GLB</button>
+      </div>
       <div className="three-badge">أرضيات + سقف + سور • اسحب للدوران • عجلة للتقريب</div>
     </div>
   );
