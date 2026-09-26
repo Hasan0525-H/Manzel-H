@@ -13,7 +13,7 @@ ML_DIR = ROOT / "ml-analyzer"
 if str(ML_DIR) not in sys.path:
     sys.path.insert(0, str(ML_DIR))
 
-from fal_renderer import configured as fal_configured, render_with_fal  # noqa: E402
+from render_images_v2 import render_exterior, render_interior  # noqa: E402
 
 app = FastAPI(title="Manzel H AI Render Gateway", version="15.0")
 
@@ -49,9 +49,9 @@ class RenderRequest(BaseModel):
 def health():
     return {
         "ok": True,
-        "platform": "fal.ai",
-        "model": os.getenv("FAL_RENDER_MODEL", "fal-ai/flux-control-lora-canny/image-to-image"),
-        "configured": fal_configured(),
+        "platform": "server-cpu",
+        "model": "deterministic-pillow-renderer",
+        "configured": True,
     }
 
 
@@ -59,13 +59,11 @@ def health():
 def render_image(kind: str, payload: RenderRequest):
     if kind not in ("interior", "exterior"):
         raise HTTPException(status_code=404, detail="unknown render kind")
-    if not fal_configured():
-        raise HTTPException(status_code=503, detail="FAL_KEY is not configured")
-
     try:
-        image = render_with_fal(kind, payload.model_dump())
+        data = payload.model_dump()
+        image = render_interior(data, size=1536) if kind == "interior" else render_exterior(data, width=1536, height=2048)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"fal.ai render failed: {type(exc).__name__}") from exc
+        raise HTTPException(status_code=500, detail=f"server render failed: {type(exc).__name__}") from exc
 
     return Response(
         content=image,
