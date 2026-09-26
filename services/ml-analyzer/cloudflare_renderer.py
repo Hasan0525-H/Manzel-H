@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 import requests
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
 from render_images_v2 import render_exterior, render_interior
 
@@ -227,6 +227,145 @@ def _decode_cloudflare_response(response: requests.Response) -> bytes:
     if image_value.startswith("data:"):
         image_value = image_value.split(",", 1)[1]
     return base64.b64decode(image_value)
+
+
+def _direct_plan_references(plan_png: bytes) -> list[bytes]:
+    original = _resize_reference(plan_png)
+
+    image = Image.open(io.BytesIO(original)).convert("RGB")
+    gray = ImageOps.autocontrast(ImageOps.grayscale(image))
+    gray = ImageEnhance.Contrast(gray).enhance(2.4)
+    blueprint = gray.point(lambda value: 255 if value > 205 else 28).convert("RGB")
+
+    out = io.BytesIO()
+    blueprint.save(out, format="PNG", optimize=True)
+    return [original, out.getvalue()]
+
+
+def _direct_plan_prompt(kind: str, options: dict[str, Any]) -> str:
+    style = str(options.get("style") or "سعودي حديث")
+    furnishing = str(options.get("furnishing") or "full")
+    floors = max(1, int(options.get("floors") or 1))
+    garden = bool(options.get("garden", True))
+    parking = bool(options.get("parking", True))
+    fence = bool(options.get("fence", True))
+    entrance = str(options.get("entrance") or "formal")
+
+    base = f"""
+Image 0 is the original user architectural floor plan and is the authoritative geometry.
+Image 1 is only a high-contrast copy of the same plan to make walls easier to read.
+Preserve the exact outer footprint, all visible wall positions, room adjacency,
+corridors, stairs, doors, windows, voids, columns, proportions and orientation.
+Do not simplify, merge, move, remove, or invent rooms or structural walls.
+Do not reinterpret the plan into a different house.
+Floor count: {floors}. Architectural style: {style}.
+Premium photorealistic Saudi residential archviz, physically plausible materials,
+realistic scale, natural lighting, professional architectural photography,
+clean construction details, no text, no labels, no watermark, no fantasy geometry.
+"""
+
+    if kind == "interior":
+        furnishing_text = {
+            "full": "fully furnished with elegant high-end contemporary furniture",
+            "light": "lightly furnished with only essential furniture",
+            "none": "unfurnished, showing architecture and finishes only",
+        }.get(furnishing, "fully furnished")
+        return base + f"""
+Create a high-end isometric cutaway / dollhouse interior visualization.
+The floor plan must remain visibly traceable one-to-one to image 0.
+Keep the exact room arrangement and circulation. {furnishing_text}.
+Use realistic stone, plaster, timber, glass, tile, fabric, daylight and indirect lighting.
+"""
+
+    return base + f"""
+Create a premium photorealistic exterior residence consistent with the exact footprint
+in image 0 and the requested {floors} floor(s). The plan does not define a full elevation,
+so design facade finishes and elevation details without changing the footprint.
+Garden: {garden}. Parking: {parking}. Boundary fence: {fence}. Entrance: {entrance}.
+Use a realistic eye-level architectural camera, straight verticals, Saudi-climate
+landscaping, premium stone/plaster/glass/wood/metal, realistic sky and warm lighting.
+"""
+
+
+def _direct_plan_seed(kind: str, plan_png: bytes, options: dict[str, Any]) -> int:
+    payload = json.dumps(options, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(kind.encode("utf-8") + plan_png + payload).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
+def render_plan_with_cloudflare(kind: str, plan_png: bytes, options: dict[str, Any]) -> bytes:
+    if kind not in ("interior", "exterior"):
+        raise ValueError("unknown render kind")
+    if not configured():
+        raise RuntimeError("Cloudflare Workers AI credentials are not configured")
+
+    refs = _direct_plan_references(plan_png)
+    width, height = ((1920, 1920) if kind == "interior" else (1440, 1920))
+    seed = _direct_plan_seed(kind, plan_png, options)
+
+    files = {
+        f"input_image_{index}": (f"plan-reference-{index}.png", image, "image/png")
+        for index, image in enumerate(refs[:4])
+    }
+    form = {
+        "prompt": _direct_plan_prompt(kind, options),
+        "width": str(width),
+        "height": str(height),
+        "guidance": os.getenv("CLOUDFLARE_GUIDANCE", "4.5"),
+        "seed": str(seed),
+    }
+
+    def run_model(model_name: str) -> requests.Response:
+        endpoint = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{model_name}"
+        started = time.monotonic()
+        response = requests.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {API_TOKEN}"},
+            data=form,
+            files=files,
+            timeout=TIMEOUT_SECONDS,
+        )
+        LOGGER.info(
+            "cloudflare_direct_plan model=%s kind=%s refs=%s size=%sx%s status=%s elapsed=%.2fs ray=%s seed=%s",
+            model_name,
+            kind,
+            len(refs),
+            width,
+            height,
+            response.status_code,
+            time.monotonic() - started,
+            response.headers.get("cf-ray", "-"),
+            seed,
+        )
+        return response
+
+    response = run_model(MODEL)
+    if (
+        response.status_code in (429, 500, 502, 503, 504)
+        and FALLBACK_MODEL
+        and FALLBACK_MODEL != MODEL
+    ):
+        LOGGER.warning(
+            "cloudflare_direct_fallback primary=%s fallback=%s status=%s ray=%s",
+            MODEL,
+            FALLBACK_MODEL,
+            response.status_code,
+            response.headers.get("cf-ray", "-"),
+        )
+        response = run_model(FALLBACK_MODEL)
+
+    if response.status_code >= 400:
+        detail = response.text[:700].replace("\n", " ")
+        LOGGER.error(
+            "cloudflare_direct_failed status=%s ray=%s detail=%s",
+            response.status_code,
+            response.headers.get("cf-ray", "-"),
+            detail,
+        )
+        raise RuntimeError(f"Cloudflare Workers AI HTTP {response.status_code}")
+
+    image_bytes = _decode_cloudflare_response(response)
+    return _normalize_output_png(image_bytes)
 
 
 def render_with_cloudflare(kind: str, payload: dict[str, Any]) -> bytes:
