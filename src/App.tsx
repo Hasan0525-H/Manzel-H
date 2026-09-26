@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapOrthogonalIntersections, snapPoint } from "./geometry";
-import type { CalibrationEvidence, Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
+import type { CalibrationEvidence, Column, Opening, Point, ProjectSnapshot, Room, Stair, Wall } from "./types";
 import { validateReconstruction } from "./validation";
 import { analyzeWithRemote } from "./analyzer";
 import { createEvidence, robustScale } from "./calibration";
 import { rasterizePlanFile } from "./importers";
 
-type Tool = "select" | "calibrate" | "wall" | "door" | "window";
+type Tool = "select" | "calibrate" | "wall" | "door" | "window" | "column" | "stair";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -18,6 +18,8 @@ function App() {
   const [walls, setWalls] = useState<Wall[]>([]);
   const [openings, setOpenings] = useState<Opening[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [columns, setColumns] = useState<Column[]>([]);
+  const [stairs, setStairs] = useState<Stair[]>([]);
   const [exteriorWallIds, setExteriorWallIds] = useState<string[]>([]);
   const [roomNames, setRoomNames] = useState<Record<string, string>>({});
   const [tool, setTool] = useState<Tool>("select");
@@ -36,6 +38,7 @@ function App() {
   const [ceilingVisible, setCeilingVisible] = useState(false);
   const [roofVisible, setRoofVisible] = useState(true);
   const [siteWallVisible, setSiteWallVisible] = useState(true);
+  const [furnitureVisible, setFurnitureVisible] = useState(true);
   const [message, setMessage] = useState("ارفع المخطط، ثم عاير القياس من بُعد معروف.");
   const svgRef = useRef<SVGSVGElement | null>(null);
   const importRef = useRef<HTMLInputElement | null>(null);
@@ -67,7 +70,7 @@ function App() {
       localStorage.setItem("manzel-h-autosave", JSON.stringify(snapshot));
     }, 500);
     return () => clearTimeout(id);
-  }, [walls, openings, rooms, metersPerPixel, wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible]);
+  }, [walls, openings, rooms, columns, stairs, metersPerPixel, wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible, furnitureVisible]);
 
   const onUpload = async (file?: File) => {
     if (!file) return;
@@ -80,6 +83,8 @@ function App() {
       setWalls([]);
       setOpenings([]);
       setRooms([]);
+      setColumns([]);
+      setStairs([]);
       setRoomNames({});
       setCalibration([]);
       setCalibrationEvidence([]);
@@ -164,6 +169,40 @@ function App() {
 
     if (tool === "door" || tool === "window") {
       addOpeningAt(p, tool);
+      return;
+    }
+
+    if (tool === "column") {
+      if (!scaleReady) {
+        setMessage("عاير القياس أولاً قبل إضافة عمود.");
+        return;
+      }
+      setColumns((items) => [...items, {
+        id: uid(),
+        point: p,
+        widthM: 0.30,
+        depthM: 0.30,
+        heightM: wallHeight,
+      }]);
+      setMessage("تمت إضافة عمود 30×30 سم.");
+      return;
+    }
+
+    if (tool === "stair") {
+      if (!scaleReady) {
+        setMessage("عاير القياس أولاً قبل إضافة الدرج.");
+        return;
+      }
+      setStairs((items) => [...items, {
+        id: uid(),
+        origin: p,
+        widthM: 1.2,
+        runM: 3.6,
+        riseM: wallHeight,
+        steps: 18,
+        rotationDeg: 0,
+      }]);
+      setMessage("تمت إضافة درج قابل للتعديل.");
       return;
     }
 
@@ -376,7 +415,7 @@ function App() {
 
   function createSnapshot(includeImage = true): ProjectSnapshot {
     return {
-      version: 4,
+      version: 5,
       units: scaleReady ? "meter" : "pixel",
       image: {
         width: imageSize.w,
@@ -384,10 +423,12 @@ function App() {
         ...(includeImage && imageDataUrl ? { dataUrl: imageDataUrl } : {}),
       },
       calibration: { knownMeters, metersPerPixel, evidence: calibrationEvidence, spreadPct: calibrationSpreadPct },
-      building: { wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible },
+      building: { wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible, furnitureVisible },
       walls,
       openings,
       rooms,
+      columns,
+      stairs,
     };
   }
 
@@ -416,8 +457,11 @@ function App() {
     setCeilingVisible(snapshot.building.ceilingVisible ?? false);
     setRoofVisible(snapshot.building.roofVisible ?? true);
     setSiteWallVisible(snapshot.building.siteWallVisible ?? true);
+    setFurnitureVisible(snapshot.building.furnitureVisible ?? true);
     setWalls(snapshot.walls || []);
     setOpenings(snapshot.openings || []);
+    setColumns(snapshot.columns || []);
+    setStairs(snapshot.stairs || []);
     const names: Record<string, string> = {};
     for (const room of snapshot.rooms || []) names[roomKey(room)] = room.name;
     setRoomNames(names);
@@ -428,7 +472,7 @@ function App() {
     if (!file) return;
     try {
       const snapshot = JSON.parse(await file.text()) as ProjectSnapshot;
-      if (!snapshot || ![3,4].includes(Number(snapshot.version)) || !Array.isArray(snapshot.walls)) throw new Error("invalid");
+      if (!snapshot || ![3,4,5].includes(Number(snapshot.version)) || !Array.isArray(snapshot.walls)) throw new Error("invalid");
       loadSnapshot(snapshot);
     } catch {
       setMessage("ملف المشروع غير صالح أو من إصدار غير مدعوم.");
@@ -453,7 +497,7 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div>
-          <div className="brand">منزل H <span>ENGINE V3</span></div>
+          <div className="brand">منزل H <span>ENGINE V4</span></div>
           <div className="subtitle">هندسة قابلة للمراجعة • غرف تلقائية • فتحات حقيقية • هوية سعودية</div>
         </div>
         <div className="view-switch">
@@ -473,8 +517,10 @@ function App() {
         <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
         <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>باب</button>
         <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>نافذة</button>
+        <button className={tool === "column" ? "active" : ""} onClick={() => setTool("column")}>عمود</button>
+        <button className={tool === "stair" ? "active" : ""} onClick={() => setTool("stair")}>درج</button>
         <button onClick={autoTrace} disabled={!imageUrl}>تحليل الجدران</button>
-        <button onClick={() => { setWalls([]); setOpenings([]); setRooms([]); }} disabled={!walls.length}>مسح</button>
+        <button onClick={() => { setWalls([]); setOpenings([]); setRooms([]); setColumns([]); setStairs([]); }} disabled={!walls.length && !columns.length && !stairs.length}>مسح</button>
         <button onClick={exportJson} disabled={!walls.length}>تصدير مشروع</button>
         <button onClick={() => importRef.current?.click()}>استيراد مشروع</button>
         <input ref={importRef} hidden type="file" accept=".json,application/json" onChange={(e) => importProject(e.target.files?.[0])} />
@@ -560,6 +606,31 @@ function App() {
                 })}
                 {calibration.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="10" className="cal-point" />)}
                 {calibration.length === 2 && <line x1={calibration[0].x} y1={calibration[0].y} x2={calibration[1].x} y2={calibration[1].y} className="cal-line" />}
+                {columns.map((col) => {
+                  const w = scaleReady ? col.widthM / metersPerPixel! : 16;
+                  const h = scaleReady ? col.depthM / metersPerPixel! : 16;
+                  return (
+                    <rect
+                      key={col.id}
+                      x={col.point.x - w / 2}
+                      y={col.point.y - h / 2}
+                      width={w}
+                      height={h}
+                      className="column-mark"
+                      onDoubleClick={(e) => { e.stopPropagation(); setColumns((items) => items.filter((x) => x.id !== col.id)); }}
+                    />
+                  );
+                })}
+                {stairs.map((stair) => {
+                  const w = scaleReady ? stair.widthM / metersPerPixel! : 50;
+                  const h = scaleReady ? stair.runM / metersPerPixel! : 120;
+                  return (
+                    <g key={stair.id} transform={`translate(${stair.origin.x} ${stair.origin.y}) rotate(${stair.rotationDeg})`}>
+                      <rect x={-w/2} y={-h/2} width={w} height={h} className="stair-mark"
+                        onDoubleClick={(e) => { e.stopPropagation(); setStairs((items) => items.filter((x) => x.id !== stair.id)); }} />
+                    </g>
+                  );
+                })}
                 {draftStart && <circle cx={draftStart.x} cy={draftStart.y} r="9" className="draft-point" />}
               </svg>
             )}
@@ -581,6 +652,9 @@ function App() {
               ceilingVisible={ceilingVisible}
               roofVisible={roofVisible}
               siteWallVisible={siteWallVisible}
+              columns={columns}
+              stairs={stairs}
+              furnitureVisible={furnitureVisible}
             />
           </section>
         )}
@@ -683,6 +757,7 @@ function App() {
           <label><input type="checkbox" checked={roofVisible} onChange={(e) => setRoofVisible(e.target.checked)} /> سقف</label>
           <label><input type="checkbox" checked={ceilingVisible} onChange={(e) => setCeilingVisible(e.target.checked)} /> سقف داخلي</label>
           <label><input type="checkbox" checked={siteWallVisible} onChange={(e) => setSiteWallVisible(e.target.checked)} /> سور خارجي</label>
+          <label><input type="checkbox" checked={furnitureVisible} onChange={(e) => setFurnitureVisible(e.target.checked)} /> أثاث مبدئي</label>
         </div>
 
         <div className="metrics">
@@ -691,6 +766,8 @@ function App() {
           <span><b>{openings.filter((o) => o.kind === "door").length}</b> باب</span>
           <span><b>{openings.filter((o) => o.kind === "window").length}</b> نافذة</span>
           <span><b>{rooms.length}</b> مساحة مغلقة</span>
+          <span><b>{columns.length}</b> عمود</span>
+          <span><b>{stairs.length}</b> درج</span>
           <span><b>{totalRoomArea ? `${totalRoomArea.toFixed(1)} م²` : "—"}</b> مساحة داخلية</span>
           <span><b>{scaleReady ? `${(metersPerPixel! * 1000).toFixed(2)} مم/px` : "غير معاير"}</b> مقياس</span>
           <span><b>{calibrationEvidence.length}</b> قياسات معايرة</span>
@@ -742,6 +819,9 @@ function ThreePreview(props: {
   ceilingVisible: boolean;
   roofVisible: boolean;
   siteWallVisible: boolean;
+  columns: Column[];
+  stairs: Stair[];
+  furnitureVisible: boolean;
 }) {
   const mount = useRef<HTMLDivElement | null>(null);
   const exportRoot = useRef<THREE.Group | null>(null);
@@ -933,6 +1013,69 @@ function ThreePreview(props: {
       group.add(gate);
     }
 
+    for (const col of props.columns) {
+      if (!props.metersPerPixel) continue;
+      const x = col.point.x * scale - cx;
+      const z = col.point.y * scale - cy;
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(col.widthM, col.heightM, col.depthM),
+        accentMat
+      );
+      mesh.position.set(x, col.heightM / 2, z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+
+    for (const stair of props.stairs) {
+      if (!props.metersPerPixel) continue;
+      const x = stair.origin.x * scale - cx;
+      const z = stair.origin.y * scale - cy;
+      const steps = Math.max(3, Math.round(stair.steps));
+      const rise = stair.riseM / steps;
+      const run = stair.runM / steps;
+      const stairGroup = new THREE.Group();
+      for (let i = 0; i < steps; i++) {
+        const tread = new THREE.Mesh(
+          new THREE.BoxGeometry(stair.widthM, rise, run),
+          floorMat
+        );
+        tread.position.set(0, rise * (i + 0.5), -stair.runM / 2 + run * (i + 0.5));
+        tread.castShadow = true;
+        tread.receiveShadow = true;
+        stairGroup.add(tread);
+      }
+      stairGroup.position.set(x, 0, z);
+      stairGroup.rotation.y = THREE.MathUtils.degToRad(-stair.rotationDeg);
+      group.add(stairGroup);
+    }
+
+    if (props.furnitureVisible) {
+      for (const room of props.rooms.slice(0, 12)) {
+        const x = room.centroid.x * scale - cx;
+        const z = room.centroid.y * scale - cy;
+        const isMajlis = /مجلس|صالة|living/i.test(room.name);
+        const isBed = /نوم|bed/i.test(room.name);
+        const isKitchen = /مطبخ|kitchen/i.test(room.name);
+        if (isBed) {
+          const bed = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.45, 2), new THREE.MeshStandardMaterial({ color: 0xd8d0c5, roughness: 0.85 }));
+          bed.position.set(x, 0.225, z);
+          bed.castShadow = true;
+          group.add(bed);
+        } else if (isKitchen) {
+          const island = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.9, 0.8), accentMat);
+          island.position.set(x, 0.45, z);
+          island.castShadow = true;
+          group.add(island);
+        } else if (isMajlis) {
+          const sofa = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.75, 0.85), new THREE.MeshStandardMaterial({ color: colors.accent, roughness: 0.9 }));
+          sofa.position.set(x, 0.375, z);
+          sofa.castShadow = true;
+          group.add(sofa);
+        }
+      }
+    }
+
     scene.add(group);
 
     const ground = new THREE.Mesh(
@@ -1022,6 +1165,9 @@ function ThreePreview(props: {
     props.ceilingVisible,
     props.roofVisible,
     props.siteWallVisible,
+    props.columns,
+    props.stairs,
+    props.furnitureVisible,
   ]);
 
   return (

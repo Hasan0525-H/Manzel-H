@@ -274,3 +274,17 @@ button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
 @media (max-width: 560px) {
   .opening-editor { grid-template-columns: 1fr; }
 }
+
+.column-mark {
+  fill: #8b5e34;
+  stroke: #fff;
+  stroke-width: 2px;
+  cursor: pointer;
+}
+.stair-mark {
+  fill: rgba(99,102,241,.18);
+  stroke: #4f46e5;
+  stroke-width: 2px;
+  stroke-dasharray: 7 4;
+  cursor: pointer;
+}
