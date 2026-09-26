@@ -85,6 +85,7 @@ def build_house_glb(payload: dict[str, Any]) -> bytes:
     wall_height = max(2.4, min(5.0, float(payload.get("wallHeight") or 3.2)))
     default_thickness = max(0.10, min(0.45, float(payload.get("wallThicknessM") or 0.20)))
     style = str(payload.get("style") or "سعودي حديث")
+    exterior_wall_ids = {str(value) for value in (payload.get("exteriorWallIds") or [])}
     palette = PALETTES.get(style, PALETTES["سعودي حديث"])
 
     mats = {
@@ -181,25 +182,26 @@ def build_house_glb(payload: dict[str, Any]) -> bytes:
         if cursor < length:
             wall_box(cursor, length, 0.0, wall_height)
 
-        # Architectural bands and restrained stone accents.
-        band = box_mesh(
-            [length, 0.10, thickness + 0.055],
-            [(ax + bx) / 2, wall_height - 0.10, (az + bz) / 2],
-            angle,
-            mats["accent"],
-        )
-        add(scene, f"band_{wall_counter}", band)
-
-        cladding_len = min(1.35, length * 0.28)
-        if cladding_len > 0.45:
-            x, z = ax + ux * (cladding_len / 2), az + uz * (cladding_len / 2)
-            cladding = box_mesh(
-                [cladding_len, wall_height * 0.68, thickness + 0.04],
-                [x, wall_height * 0.34, z],
+        # Facade accents must only appear on exterior walls.
+        if str(wall.get("id")) in exterior_wall_ids:
+            band = box_mesh(
+                [length, 0.085, thickness + 0.035],
+                [(ax + bx) / 2, wall_height - 0.09, (az + bz) / 2],
                 angle,
-                mats["stone"],
+                mats["accent"],
             )
-            add(scene, f"cladding_{wall_counter}", cladding)
+            add(scene, f"band_{wall_counter}", band)
+
+            cladding_len = min(1.10, length * 0.22)
+            if cladding_len > 0.55:
+                x, z = ax + ux * (cladding_len / 2), az + uz * (cladding_len / 2)
+                cladding = box_mesh(
+                    [cladding_len, wall_height * 0.62, thickness + 0.025],
+                    [x, wall_height * 0.31, z],
+                    angle,
+                    mats["stone"],
+                )
+                add(scene, f"cladding_{wall_counter}", cladding)
 
     xs = []
     zs = []
@@ -217,9 +219,8 @@ def build_house_glb(payload: dict[str, Any]) -> bytes:
 
     slab = box_mesh([house_w + 0.18, 0.10, house_d + 0.18], [house_cx, 0.05, house_cz], 0, mats["floor"])
     add(scene, "ground_floor", slab)
-    roof = box_mesh([house_w + 0.30, 0.16, house_d + 0.30], [house_cx, wall_height + 0.08, house_cz], 0, mats["white"])
-    add(scene, "roof", roof)
-
+    # Keep the interactive model open from above instead of covering the plan
+    # with a full roof slab. The parapet keeps a finished exterior silhouette.
     # Parapet frame.
     parapet_h = 0.55
     for name, extents, center in (
