@@ -3,10 +3,11 @@ import { analyzeWithRemote } from "./analyzer";
 import { canonicalizeAndInferOpenings, detectRooms, snapOrthogonalIntersections } from "./geometry";
 import { rasterizePlanFile } from "./importers";
 import { analyzePlanLocally } from "./planAnalysis";
+import { buildHouseInCloud } from "./cloudBuilder";
 import ThreeScene from "./ThreeScene";
 import type { Column, Opening, Room, Stair, Wall } from "./types";
 
-type Phase = "upload" | "analyzing" | "white" | "real";
+type Phase = "upload" | "analyzing" | "white" | "building" | "real";
 
 const DEFAULT_SCALE = 0.02;
 
@@ -25,6 +26,7 @@ export default function App() {
   const [style, setStyle] = useState("سعودي حديث");
   const [wallHeight, setWallHeight] = useState(3.2);
   const [wallThicknessM, setWallThicknessM] = useState(0.2);
+  const [cloudModelUrl, setCloudModelUrl] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const progressTimer = useRef<number | null>(null);
 
@@ -41,7 +43,8 @@ export default function App() {
 
   useEffect(() => () => {
     if (progressTimer.current) window.clearInterval(progressTimer.current);
-  }, []);
+    if (cloudModelUrl) URL.revokeObjectURL(cloudModelUrl);
+  }, [cloudModelUrl]);
 
   const startProgress = () => {
     setProgress(0);
@@ -118,6 +121,36 @@ export default function App() {
     }
   };
 
+  const buildRealHouse = async (nextStyle = style) => {
+    if (!metersPerPixel || !walls.length) return;
+    setStyle(nextStyle);
+    setPhase("building");
+    startProgress();
+    try {
+      const url = await buildHouseInCloud({
+        walls,
+        openings,
+        imageSize,
+        metersPerPixel,
+        wallHeight,
+        wallThicknessM,
+        style: nextStyle,
+      });
+      if (cloudModelUrl) URL.revokeObjectURL(cloudModelUrl);
+      setCloudModelUrl(url);
+      await finishProgress();
+      setPhase("real");
+    } catch {
+      if (progressTimer.current) {
+        window.clearInterval(progressTimer.current);
+        progressTimer.current = null;
+      }
+      setProgress(100);
+      setCloudModelUrl(null);
+      setPhase("real");
+    }
+  };
+
   const onFile = async (file?: File) => {
     if (!file) return;
     try {
@@ -127,6 +160,8 @@ export default function App() {
       setOpenings([]);
       setRooms([]);
       setExteriorWallIds([]);
+      if (cloudModelUrl) URL.revokeObjectURL(cloudModelUrl);
+      setCloudModelUrl(null);
       const scale = estimateScale(raster.width);
       await analyze(raster.dataUrl, { w: raster.width, h: raster.height }, scale);
     } catch {
@@ -144,6 +179,8 @@ export default function App() {
     setOpenings([]);
     setRooms([]);
     setExteriorWallIds([]);
+    if (cloudModelUrl) URL.revokeObjectURL(cloudModelUrl);
+    setCloudModelUrl(null);
   };
 
   return (
@@ -166,14 +203,14 @@ export default function App() {
         </main>
       )}
 
-      {phase === "analyzing" && (
+      {(phase === "analyzing" || phase === "building") && (
         <main className="analysis-screen">
           <div className="analysis-card">
             <div className="analysis-percent">{progress}%</div>
             <div className="analysis-track">
               <div className="analysis-fill" style={{ width: `${progress}%` }} />
             </div>
-            <div className="analysis-label">تحليل المخطط</div>
+            <div className="analysis-label">{phase === "building" ? "بناء المنزل سحابيًا" : "تحليل المخطط"}</div>
           </div>
         </main>
       )}
@@ -201,18 +238,19 @@ export default function App() {
               style={style}
               mode={phase === "real" ? "real" : "white"}
               showExports={phase === "real"}
+              modelUrl={phase === "real" ? cloudModelUrl || undefined : undefined}
             />
           </div>
 
           {phase === "white" ? (
             <div className="execute-bar">
-              <button className="execute-button" onClick={() => setPhase("real")}>نفّذ</button>
+              <button className="execute-button" onClick={() => buildRealHouse()}>نفّذ</button>
             </div>
           ) : (
             <div className="real-controls">
-              <button className={style === "سعودي حديث" ? "active" : ""} onClick={() => setStyle("سعودي حديث")}>سعودي</button>
-              <button className={style === "نجدي حديث" ? "active" : ""} onClick={() => setStyle("نجدي حديث")}>نجدي</button>
-              <button className={style === "حجازي حديث" ? "active" : ""} onClick={() => setStyle("حجازي حديث")}>حجازي</button>
+              <button className={style === "سعودي حديث" ? "active" : ""} onClick={() => buildRealHouse("سعودي حديث")}>سعودي</button>
+              <button className={style === "نجدي حديث" ? "active" : ""} onClick={() => buildRealHouse("نجدي حديث")}>نجدي</button>
+              <button className={style === "حجازي حديث" ? "active" : ""} onClick={() => buildRealHouse("حجازي حديث")}>حجازي</button>
               <button onClick={() => setWallHeight((value) => value >= 3.8 ? 3.0 : Number((value + 0.2).toFixed(1)))}>ارتفاع</button>
             </div>
           )}

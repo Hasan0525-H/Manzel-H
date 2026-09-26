@@ -10,10 +10,12 @@ import numpy as np
 import segmentation_models_pytorch as smp
 import torch
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from huggingface_hub import hf_hub_download, list_repo_files
 from PIL import Image
+from pydantic import BaseModel
+from house_builder import build_house_glb
 
 try:
     from safetensors.torch import load_file as load_safetensors
@@ -406,3 +408,29 @@ async def analyze(
         "walls": walls,
         "openings": openings,
     }
+
+
+class HouseBuildRequest(BaseModel):
+    walls: list[dict]
+    openings: list[dict] = []
+    imageSize: dict
+    metersPerPixel: float
+    wallHeight: float = 3.2
+    wallThicknessM: float = 0.2
+    style: str = "سعودي حديث"
+
+
+@app.post("/build-house")
+def build_house(payload: HouseBuildRequest):
+    try:
+        glb = build_house_glb(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="house build failed") from exc
+
+    return Response(
+        content=glb,
+        media_type="model/gltf-binary",
+        headers={"Content-Disposition": 'inline; filename="manzel-h.glb"'},
+    )
