@@ -10,6 +10,7 @@ export async function buildHouseInCloud(args: {
   wallHeight: number;
   wallThicknessM: number;
   style: string;
+  exteriorWallIds: string[];
 }): Promise<string> {
   const configured = import.meta.env.VITE_HOUSE_BUILDER_URL?.trim();
   const base = configured || CLOUD_HOUSE_URL;
