@@ -294,3 +294,55 @@ button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
   stroke-width: 4px !important;
   filter: drop-shadow(0 0 5px rgba(220,38,38,.45));
 }
+
+.floorbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: #e8e1d6;
+  border-bottom: 1px solid #d4c9bb;
+}
+.floor-tabs {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.floor-tabs button {
+  white-space: nowrap;
+}
+.floor-tabs button.active {
+  background: #6d5841;
+  color: #fff;
+  border-color: #6d5841;
+}
+.floor-editor {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 1fr) minmax(120px, .6fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #d7cec2;
+  border-radius: 12px;
+  background: #f4efe7;
+}
+.floor-editor > strong {
+  align-self: center;
+  color: #243047;
+}
+.floor-count {
+  align-self: center;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #e2d8ca;
+  color: #54493d;
+  font-size: 11px;
+  font-weight: 800;
+}
+@media (max-width: 700px) {
+  .floorbar { align-items: stretch; flex-direction: column; }
+  .floor-editor { grid-template-columns: 1fr 1fr; }
+}
