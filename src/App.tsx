@@ -79,7 +79,7 @@ export default function App() {
     let result: { walls: Wall[]; openings: Opening[] } | null = null;
     try {
       try {
-        const remote = await analyzeWithRemote(dataUrl);
+        const remote = await analyzeWithRemote(dataUrl, scale);
         if (remote?.walls?.length) {
           const canonical = canonicalizeAndInferOpenings(remote.walls, scale);
           result = {
