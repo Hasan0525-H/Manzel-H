@@ -428,7 +428,7 @@ function App() {
 
       <section className="toolbar">
         <label className="upload">رفع المخطط<input type="file" accept="image/*,application/pdf,.pdf" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
-        <button className={tool === "calibrate" ? "active" : ""} onClick={() => { setTool("calibrate"); setCalibration([]); }}>معايرة</button>
+        <button className={tool === "calibrate" ? "active" : ""} onClick={() => { setTool("calibrate"); setCalibration([]); }}>معايرة</button>\n        <button onClick={() => { setCalibration([]); setCalibrationEvidence([]); setCalibrationSpreadPct(null); setMetersPerPixel(null); }}>إعادة المعايرة</button>
         <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
         <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>باب</button>
         <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>نافذة</button>
@@ -467,14 +467,24 @@ function App() {
                   </g>
                 ))}
                 {walls.map((w) => (
-                  <line
-                    key={w.id}
-                    x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y}
-                    strokeWidth={Math.max(4, w.thickness)}
-                    strokeLinecap="square"
-                    className={exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"}
-                    onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); }}
-                  />
+                  <g key={w.id}>
+                    <line
+                      x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y}
+                      strokeWidth={Math.max(4, w.thickness)}
+                      strokeLinecap="square"
+                      className={exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"}
+                      onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); }}
+                    />
+                    {scaleReady && dist(w.a, w.b) * metersPerPixel! >= 1 && (
+                      <text
+                        className="wall-dimension"
+                        x={(w.a.x + w.b.x) / 2}
+                        y={(w.a.y + w.b.y) / 2 - 10}
+                      >
+                        {(dist(w.a, w.b) * metersPerPixel!).toFixed(2)} م
+                      </text>
+                    )}
+                  </g>
                 ))}
                 {openings.map((o) => {
                   const w = walls.find((x) => x.id === o.wallId);
