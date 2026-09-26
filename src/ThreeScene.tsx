@@ -579,9 +579,6 @@ export default function ThreeScene(props: Props) {
       controls?.dispose();
       environmentTexture?.dispose();
 
-      for (const texture of textureCache.values()) texture.dispose();
-      textureCache.clear();
-
       scene.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
           obj.geometry.dispose();
