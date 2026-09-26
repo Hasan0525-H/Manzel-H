@@ -33,7 +33,7 @@ export async function rasterizePlanFile(file: File): Promise<RasterizedPlan> {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("تعذر إنشاء Canvas");
 
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
     return {
       dataUrl: canvas.toDataURL("image/png"),
       width: canvas.width,
