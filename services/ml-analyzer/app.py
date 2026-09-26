@@ -660,7 +660,7 @@ def render_image(kind: str, payload: HouseBuildRequest):
         raise HTTPException(status_code=404, detail="unknown render kind")
 
     try:
-        png = render_interior(data, size=1536) if kind == "interior" else render_exterior(data, width=1536, height=2048)
+        png = render_interior(data, size=2048) if kind == "interior" else render_exterior(data, width=2048, height=2732)
     except Exception as exc:
         raise HTTPException(status_code=500, detail="server render failed") from exc
 
