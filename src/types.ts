@@ -1,4 +1,11 @@
-export type Point = { x: number; y: number };\n\nexport type CalibrationEvidence = {\n  id: string;\n  a: Point;\n  b: Point;\n  meters: number;\n};
+export type Point = { x: number; y: number };
+
+export type CalibrationEvidence = {
+  id: string;
+  a: Point;
+  b: Point;
+  meters: number;
+};
 
 export type Wall = {
   id: string;
