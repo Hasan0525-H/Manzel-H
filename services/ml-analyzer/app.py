@@ -384,6 +384,184 @@ def extract_geometry(mask: np.ndarray, original_w: int, original_h: int, scale: 
     return walls, openings[:120]
 
 
+def detect_rooms_server(walls: list[dict], meters_per_pixel: float):
+    if not walls or meters_per_pixel <= 0:
+        return [], []
+
+    axis = []
+    for wall in walls:
+        ax, ay = float(wall["a"]["x"]), float(wall["a"]["y"])
+        bx, by = float(wall["b"]["x"]), float(wall["b"]["y"])
+        if abs(ax - bx) < 18 or abs(ay - by) < 18:
+            axis.append(wall)
+    if len(axis) < 4:
+        return [], []
+
+    all_x = [float(w[k]["x"]) for w in axis for k in ("a", "b")]
+    all_y = [float(w[k]["y"]) for w in axis for k in ("a", "b")]
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+    span = max(max_x - min_x, max_y - min_y, 100.0)
+    tol = max(6.0, min(14.0, span * 0.008))
+    margin = max(28.0, span * 0.045)
+
+    def cluster(values):
+        values = sorted(values)
+        groups = []
+        for value in values:
+            if not groups:
+                groups.append([value])
+                continue
+            mean = sum(groups[-1]) / len(groups[-1])
+            if abs(value - mean) <= tol:
+                groups[-1].append(value)
+            else:
+                groups.append([value])
+        return [sum(g) / len(g) for g in groups]
+
+    xs = sorted(cluster(all_x + [min_x - margin, max_x + margin]))
+    ys = sorted(cluster(all_y + [min_y - margin, max_y + margin]))
+    if len(xs) < 3 or len(ys) < 3 or len(xs) * len(ys) > 10000:
+        return [], []
+
+    vertical = []
+    horizontal = []
+    for wall in axis:
+        dx = abs(float(wall["a"]["x"]) - float(wall["b"]["x"]))
+        dy = abs(float(wall["a"]["y"]) - float(wall["b"]["y"]))
+        (vertical if dx <= dy else horizontal).append(wall)
+
+    def overlap(a1, a2, b1, b2):
+        return max(0.0, min(max(a1, a2), max(b1, b2)) - max(min(a1, a2), min(b1, b2)))
+
+    def blocks_vertical(x, y1, y2):
+        length = max(1.0, y2 - y1)
+        covered = 0.0
+        for wall in vertical:
+            wx = (float(wall["a"]["x"]) + float(wall["b"]["x"])) / 2
+            if abs(wx - x) <= tol:
+                covered += overlap(float(wall["a"]["y"]), float(wall["b"]["y"]), y1, y2)
+        return covered >= max(length * 0.62, min(18.0, length))
+
+    def blocks_horizontal(y, x1, x2):
+        length = max(1.0, x2 - x1)
+        covered = 0.0
+        for wall in horizontal:
+            wy = (float(wall["a"]["y"]) + float(wall["b"]["y"])) / 2
+            if abs(wy - y) <= tol:
+                covered += overlap(float(wall["a"]["x"]), float(wall["b"]["x"]), x1, x2)
+        return covered >= max(length * 0.62, min(18.0, length))
+
+    cols, rows = len(xs) - 1, len(ys) - 1
+
+    def cell_id(col, row):
+        return row * cols + col
+
+    def cr(cell):
+        return cell % cols, cell // cols
+
+    def neighbors(col, row):
+        out = []
+        x1, x2, y1, y2 = xs[col], xs[col + 1], ys[row], ys[row + 1]
+        if col > 0 and not blocks_vertical(x1, y1, y2):
+            out.append(cell_id(col - 1, row))
+        if col < cols - 1 and not blocks_vertical(x2, y1, y2):
+            out.append(cell_id(col + 1, row))
+        if row > 0 and not blocks_horizontal(y1, x1, x2):
+            out.append(cell_id(col, row - 1))
+        if row < rows - 1 and not blocks_horizontal(y2, x1, x2):
+            out.append(cell_id(col, row + 1))
+        return out
+
+    exterior = set()
+    queue = []
+    for col in range(cols):
+        queue.extend([cell_id(col, 0), cell_id(col, rows - 1)])
+    for row in range(rows):
+        queue.extend([cell_id(0, row), cell_id(cols - 1, row)])
+
+    while queue:
+        current = queue.pop()
+        if current in exterior:
+            continue
+        exterior.add(current)
+        col, row = cr(current)
+        for nxt in neighbors(col, row):
+            if nxt not in exterior:
+                queue.append(nxt)
+
+    interiors = {cell_id(col, row) for row in range(rows) for col in range(cols)} - exterior
+    rooms = []
+    room_index = 1
+    while interiors:
+        seed = next(iter(interiors))
+        interiors.remove(seed)
+        stack = [seed]
+        component = []
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            col, row = cr(current)
+            for nxt in neighbors(col, row):
+                if nxt in interiors:
+                    interiors.remove(nxt)
+                    stack.append(nxt)
+
+        cells = []
+        area_px2 = 0.0
+        weighted_x = 0.0
+        weighted_y = 0.0
+        for cell in component:
+            col, row = cr(cell)
+            x1, x2, y1, y2 = xs[col], xs[col + 1], ys[row], ys[row + 1]
+            area = max(0.0, (x2 - x1) * (y2 - y1))
+            if area <= 0:
+                continue
+            cells.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+            area_px2 += area
+            weighted_x += ((x1 + x2) / 2) * area
+            weighted_y += ((y1 + y2) / 2) * area
+
+        area_m2 = area_px2 * meters_per_pixel * meters_per_pixel
+        if not cells or area_m2 < 0.65:
+            continue
+        rooms.append({
+            "id": f"room-{room_index}",
+            "cells": cells,
+            "areaM2": area_m2,
+            "centroid": {"x": weighted_x / area_px2, "y": weighted_y / area_px2},
+            "name": f"مساحة {room_index}",
+        })
+        room_index += 1
+
+    rooms.sort(key=lambda room: room["areaM2"], reverse=True)
+    for index, room in enumerate(rooms, start=1):
+        room["name"] = f"مساحة {index}"
+
+    def point_in_rooms(px, py):
+        for room in rooms:
+            for cell in room["cells"]:
+                if cell["x1"] < px < cell["x2"] and cell["y1"] < py < cell["y2"]:
+                    return True
+        return False
+
+    exterior_ids = []
+    sample_offset = max(10.0, tol * 1.5)
+    for wall in axis:
+        ax, ay = float(wall["a"]["x"]), float(wall["a"]["y"])
+        bx, by = float(wall["b"]["x"]), float(wall["b"]["y"])
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        dx, dy = bx - ax, by - ay
+        length = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / length, dx / length
+        a_inside = point_in_rooms(mx + nx * sample_offset, my + ny * sample_offset)
+        b_inside = point_in_rooms(mx - nx * sample_offset, my - ny * sample_offset)
+        if a_inside != b_inside:
+            exterior_ids.append(str(wall.get("id")))
+
+    return rooms, exterior_ids
+
+
 @app.post("/analyze")
 async def analyze(
     file: UploadFile = File(...),
@@ -424,12 +602,19 @@ async def analyze(
         meters_per_pixel=max(0.003, min(0.08, meters_per_pixel)),
     )
 
+    rooms, exterior_wall_ids = detect_rooms_server(
+        walls,
+        max(0.003, min(0.08, meters_per_pixel)),
+    )
+
     return {
         "width": width,
         "height": height,
         "engine": "cubicasa-resnet34-unet",
         "walls": walls,
         "openings": openings,
+        "rooms": rooms,
+        "exteriorWallIds": exterior_wall_ids,
     }
 
 
