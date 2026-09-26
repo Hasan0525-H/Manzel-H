@@ -16,6 +16,7 @@ type Props = {
   style: string;
   mode: "white" | "real";
   showExports?: boolean;
+  modelUrl?: string;
 };
 
 export default function ThreeScene(props: Props) {
@@ -56,6 +57,7 @@ export default function ThreeScene(props: Props) {
     const host = mount.current;
     const scene = new THREE.Scene();
     const real = props.mode === "real";
+    const useRemote = real && !!props.modelUrl;
     scene.background = new THREE.Color(real ? 0xcfd9df : 0xeeeeec);
     scene.fog = new THREE.Fog(real ? 0xcfd9df : 0xeeeeec, 40, 120);
 
@@ -80,6 +82,7 @@ export default function ThreeScene(props: Props) {
     const cx = props.imageSize.w * scale / 2;
     const cy = props.imageSize.h * scale / 2;
     const group = new THREE.Group();
+    group.visible = !useRemote;
     rootRef.current = group;
 
     const palette: Record<string, { wall: number; accent: number; floor: number; stone: number }> = {
@@ -225,7 +228,7 @@ export default function ThreeScene(props: Props) {
       group.add(sg);
     }
 
-    if (real) {
+    if (real && !useRemote) {
       for (const room of props.rooms.slice(0, 12)) {
         const x = room.centroid.x * scale - cx;
         const z = room.centroid.y * scale - cy;
@@ -280,7 +283,7 @@ export default function ThreeScene(props: Props) {
       const warm = new THREE.PointLight(0xffd29a, 18, 10, 2);
       warm.position.set(0, 2.4, planH * 0.38);
       group.add(warm);
-    } else {
+    } else if (!real) {
       const ground = new THREE.Mesh(
         new THREE.PlaneGeometry(planW + 10, planH + 10),
         new THREE.MeshStandardMaterial({ color: 0xe4e4e1, roughness: 1 })
@@ -291,6 +294,30 @@ export default function ThreeScene(props: Props) {
     }
 
     scene.add(group);
+
+    let disposed = false;
+    if (useRemote && props.modelUrl) {
+      import("three/examples/jsm/loaders/GLTFLoader.js").then(({ GLTFLoader }) => {
+        if (disposed) return;
+        const loader = new GLTFLoader();
+        loader.load(
+          props.modelUrl!,
+          (gltf) => {
+            if (disposed) return;
+            gltf.scene.traverse((obj) => {
+              if (obj instanceof THREE.Mesh) {
+                obj.castShadow = true;
+                obj.receiveShadow = true;
+              }
+            });
+            scene.add(gltf.scene);
+            rootRef.current = gltf.scene;
+          },
+          undefined,
+          console.error,
+        );
+      });
+    }
 
     let dragging = false;
     let lastX = 0;
@@ -355,6 +382,7 @@ export default function ThreeScene(props: Props) {
     loop();
 
     return () => {
+      disposed = true;
       cancelAnimationFrame(frame);
       resize.disconnect();
       renderer.domElement.removeEventListener("pointerdown", down);
