@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from pydantic import BaseModel, Field
 from house_builder import build_house_glb
-from render_images_v2 import render_interior, render_exterior
+from fal_renderer import configured as fal_configured, render_with_fal
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Yytsi/floorplan-to-3d-walls")
 DEVICE_NAME = os.getenv("DEVICE", "auto")
@@ -136,6 +136,8 @@ def health():
         "weights": app.state.weights_name,
         "model_loaded": app.state.model is not None,
         "house_builder": True,
+        "render_platform": "fal.ai",
+        "render_configured": fal_configured(),
     }
 
 
@@ -458,17 +460,17 @@ def build_house(payload: HouseBuildRequest):
 @app.post("/render-image/{kind}")
 def render_image(kind: str, payload: HouseBuildRequest):
     data = payload.model_dump()
+    if kind not in ("interior", "exterior"):
+        raise HTTPException(status_code=404, detail="unknown render kind")
+    if not fal_configured():
+        raise HTTPException(status_code=503, detail="photorealistic renderer is not configured")
+
     try:
-        if kind == "interior":
-            png = render_interior(data)
-        elif kind == "exterior":
-            png = render_exterior(data)
-        else:
-            raise HTTPException(status_code=404, detail="unknown render kind")
+        png = render_with_fal(kind, data)
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="image render failed") from exc
+        raise HTTPException(status_code=502, detail="fal.ai render failed") from exc
 
     return Response(
         content=png,
