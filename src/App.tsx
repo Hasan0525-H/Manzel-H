@@ -456,8 +456,10 @@ function App() {
 
       <section className="toolbar">
         <label className="upload">رفع المخطط<input type="file" accept="image/*,application/pdf,.pdf" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
-        <button className={tool === "calibrate" ? "active" : ""} onClick={() => { setTool("calibrate"); setCalibration([]); }}>معايرة</button>\n        <button onClick={() => { setCalibration([]); setCalibrationEvidence([]); setCalibrationSpreadPct(null); setMetersPerPixel(null); }}>إعادة المعايرة</button>
-        <button className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>تحديد</button>\n        <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
+        <button className={tool === "calibrate" ? "active" : ""} onClick={() => { setTool("calibrate"); setCalibration([]); }}>معايرة</button>
+        <button onClick={() => { setCalibration([]); setCalibrationEvidence([]); setCalibrationSpreadPct(null); setMetersPerPixel(null); }}>إعادة المعايرة</button>
+        <button className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>تحديد</button>
+        <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
         <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>باب</button>
         <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>نافذة</button>
         <button onClick={autoTrace} disabled={!imageUrl}>تحليل الجدران</button>
@@ -618,7 +620,9 @@ function App() {
           <span><b>{openings.filter((o) => o.kind === "window").length}</b> نافذة</span>
           <span><b>{rooms.length}</b> مساحة مغلقة</span>
           <span><b>{totalRoomArea ? `${totalRoomArea.toFixed(1)} م²` : "—"}</b> مساحة داخلية</span>
-          <span><b>{scaleReady ? `${(metersPerPixel! * 1000).toFixed(2)} مم/px` : "غير معاير"}</b> مقياس</span>\n          <span><b>{calibrationEvidence.length}</b> قياسات معايرة</span>\n          <span><b>{calibrationSpreadPct == null ? "—" : `${calibrationSpreadPct.toFixed(1)}٪`}</b> اختلاف المعايرة</span>
+          <span><b>{scaleReady ? `${(metersPerPixel! * 1000).toFixed(2)} مم/px` : "غير معاير"}</b> مقياس</span>
+          <span><b>{calibrationEvidence.length}</b> قياسات معايرة</span>
+          <span><b>{calibrationSpreadPct == null ? "—" : `${calibrationSpreadPct.toFixed(1)}٪`}</b> اختلاف المعايرة</span>
           <span><b>{totalWallLength ? `${totalWallLength.toFixed(1)} م` : "—"}</b> أطوال الجدران</span>
         </div>
 
