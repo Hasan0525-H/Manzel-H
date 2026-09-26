@@ -86,3 +86,8 @@ button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
 }
 .door-opening { stroke: #f59e0b; }
 .window-opening { stroke: #38bdf8; }
+
+.opening-cut { stroke: rgba(255,255,255,.96); stroke-linecap: butt; cursor: pointer; }
+.door-mark { fill: #d77b43; stroke: #fff; stroke-width: 3px; cursor: pointer; }
+.window-mark { fill: #52a7c9; stroke: #fff; stroke-width: 3px; cursor: pointer; }
+.help { margin-top: 10px; font-size: 12px; color: #6e6559; line-height: 1.7; }
