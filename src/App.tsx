@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
+import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapOrthogonalIntersections, snapPoint } from "./geometry";
 import type { CalibrationEvidence, Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
 import { validateReconstruction } from "./validation";
 import { analyzeWithRemote } from "./analyzer";
@@ -191,7 +191,8 @@ function App() {
       const remote = await analyzeWithRemote(imageUrl);
       if (remote && remote.walls.length) {
         const canonical = canonicalizeAndInferOpenings(remote.walls, metersPerPixel);
-        setWalls(canonical.walls);
+        const snappedWalls = snapOrthogonalIntersections(canonical.walls, metersPerPixel);
+        setWalls(snappedWalls);
         setOpenings(canonical.openings);
         setMessage(`المحلل السحابي اقترح ${canonical.walls.length} جدارًا و${canonical.openings.length} فتحة محتملة. راجع الهندسة قبل الاعتماد.`);
         return;
@@ -317,7 +318,8 @@ function App() {
     }
 
     const canonical = canonicalizeAndInferOpenings(merged, metersPerPixel);
-    setWalls(canonical.walls);
+    const snappedWalls = snapOrthogonalIntersections(canonical.walls, metersPerPixel);
+    setWalls(snappedWalls);
     setOpenings(canonical.openings);
     setMessage(`تم توحيد ${canonical.walls.length} جدارًا واكتشاف ${canonical.openings.length} فتحة محتملة. راجع النتيجة قبل اعتماد 3D.`);
   };
