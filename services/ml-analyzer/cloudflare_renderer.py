@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
+import json
 import os
 from typing import Any
 
@@ -119,6 +121,25 @@ def _reference_images(kind: str, payload: dict[str, Any]) -> list[bytes]:
     return refs
 
 
+def _stable_seed(kind: str, payload: dict[str, Any]) -> int:
+    source = {
+        "kind": kind,
+        "walls": payload.get("walls") or [],
+        "openings": payload.get("openings") or [],
+        "rooms": payload.get("rooms") or [],
+        "style": payload.get("style"),
+        "floors": payload.get("floors"),
+        "furnishing": payload.get("furnishing"),
+        "garden": payload.get("garden"),
+        "parking": payload.get("parking"),
+        "fence": payload.get("fence"),
+        "entrance": payload.get("entrance"),
+    }
+    raw = json.dumps(source, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(raw).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
 def _prompt(kind: str, payload: dict[str, Any]) -> str:
     style = str(payload.get("style") or "سعودي حديث")
     furnishing = str(payload.get("furnishing") or "full")
@@ -208,7 +229,8 @@ def render_with_cloudflare(kind: str, payload: dict[str, Any]) -> bytes:
         "prompt": _prompt(kind, payload),
         "width": str(width),
         "height": str(height),
-        "guidance": os.getenv("CLOUDFLARE_GUIDANCE", "4.0"),
+        "guidance": os.getenv("CLOUDFLARE_GUIDANCE", "4.5"),
+        "seed": str(_stable_seed(kind, payload)),
     }
 
     def run_model(model_name: str) -> requests.Response:
