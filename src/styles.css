@@ -143,6 +143,8 @@ button { cursor: pointer; }
   position: relative;
   min-height: 0;
   overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
 }
 .scene {
   position: absolute;
@@ -151,11 +153,17 @@ button { cursor: pointer; }
 .scene-canvas {
   position: absolute;
   inset: 0;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .scene-canvas canvas {
   width: 100%;
   height: 100%;
   display: block;
+  touch-action: none;
+  outline: none;
 }
 .scene-actions {
   position: absolute;
