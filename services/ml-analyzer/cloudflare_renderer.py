@@ -4,7 +4,9 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
+import time
 from typing import Any
 
 import requests
@@ -23,6 +25,7 @@ FALLBACK_MODEL = os.getenv(
 ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 TIMEOUT_SECONDS = int(os.getenv("CLOUDFLARE_RENDER_TIMEOUT", "150"))
+LOGGER = logging.getLogger("manzel.cloudflare")
 
 
 def configured() -> bool:
@@ -233,30 +236,58 @@ def render_with_cloudflare(kind: str, payload: dict[str, Any]) -> bytes:
         "seed": str(_stable_seed(kind, payload)),
     }
 
-    def run_model(model_name: str) -> requests.Response:
+    def run_model(model_name: str) -> tuple[requests.Response, float]:
         endpoint = (
             f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{model_name}"
         )
-        return requests.post(
+        started = time.monotonic()
+        response = requests.post(
             endpoint,
             headers={"Authorization": f"Bearer {API_TOKEN}"},
             data=form,
             files=files,
             timeout=TIMEOUT_SECONDS,
         )
+        elapsed = time.monotonic() - started
+        LOGGER.info(
+            "cloudflare_render model=%s kind=%s refs=%s size=%sx%s status=%s elapsed=%.2fs ray=%s seed=%s",
+            model_name,
+            kind,
+            len(refs),
+            width,
+            height,
+            response.status_code,
+            elapsed,
+            response.headers.get("cf-ray", "-"),
+            form["seed"],
+        )
+        return response, elapsed
 
-    response = run_model(MODEL)
+    response, _ = run_model(MODEL)
     if (
         response.status_code in (429, 500, 502, 503, 504)
         and FALLBACK_MODEL
         and FALLBACK_MODEL != MODEL
     ):
-        response = run_model(FALLBACK_MODEL)
+        LOGGER.warning(
+            "cloudflare_primary_fallback primary=%s fallback=%s status=%s ray=%s",
+            MODEL,
+            FALLBACK_MODEL,
+            response.status_code,
+            response.headers.get("cf-ray", "-"),
+        )
+        response, _ = run_model(FALLBACK_MODEL)
 
     if response.status_code >= 400:
-        detail = response.text[:700]
+        detail = response.text[:700].replace("\n", " ")
+        LOGGER.error(
+            "cloudflare_render_failed status=%s ray=%s detail=%s",
+            response.status_code,
+            response.headers.get("cf-ray", "-"),
+            detail,
+        )
         raise RuntimeError(
-            f"Cloudflare Workers AI HTTP {response.status_code}: {detail}"
+            f"Cloudflare Workers AI HTTP {response.status_code}"
         )
 
     image_bytes = _decode_cloudflare_response(response)
