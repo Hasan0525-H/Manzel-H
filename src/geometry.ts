@@ -243,3 +243,122 @@ export function openingIntervalMeters(opening: Opening, wallLengthM: number) {
     end: Math.min(wallLengthM, center + opening.widthM / 2),
   };
 }
+
+
+export function canonicalizeAndInferOpenings(
+  walls: Wall[],
+  metersPerPixel: number | null,
+): { walls: Wall[]; openings: Opening[] } {
+  if (!metersPerPixel || metersPerPixel <= 0 || walls.length < 2) {
+    return { walls, openings: [] };
+  }
+
+  const tolerance = Math.max(8, 0.16 / metersPerPixel);
+  const minOpeningPx = 0.62 / metersPerPixel;
+  const maxOpeningPx = 2.2 / metersPerPixel;
+
+  type Segment = {
+    wall: Wall;
+    horizontal: boolean;
+    fixed: number;
+    start: number;
+    end: number;
+  };
+
+  const segments: Segment[] = walls
+    .filter((w) => Math.abs(w.a.x - w.b.x) < tolerance || Math.abs(w.a.y - w.b.y) < tolerance)
+    .map((wall) => {
+      const horizontal = Math.abs(wall.a.y - wall.b.y) <= Math.abs(wall.a.x - wall.b.x);
+      return {
+        wall,
+        horizontal,
+        fixed: horizontal ? (wall.a.y + wall.b.y) / 2 : (wall.a.x + wall.b.x) / 2,
+        start: horizontal ? Math.min(wall.a.x, wall.b.x) : Math.min(wall.a.y, wall.b.y),
+        end: horizontal ? Math.max(wall.a.x, wall.b.x) : Math.max(wall.a.y, wall.b.y),
+      };
+    });
+
+  const unused = new Set(segments.map((_, i) => i));
+  const canonical: Wall[] = [];
+  const inferred: Opening[] = [];
+
+  while (unused.size) {
+    const seedIndex = unused.values().next().value as number;
+    const seed = segments[seedIndex];
+    const groupIndexes = [...unused].filter((i) => {
+      const s = segments[i];
+      return s.horizontal === seed.horizontal && Math.abs(s.fixed - seed.fixed) <= tolerance;
+    });
+    groupIndexes.forEach((i) => unused.delete(i));
+
+    const group = groupIndexes.map((i) => segments[i]).sort((a, b) => a.start - b.start);
+    let clusterStart = group[0].start;
+    let clusterEnd = group[0].end;
+    let fixedWeighted = group[0].fixed * (group[0].end - group[0].start);
+    let fixedWeight = group[0].end - group[0].start;
+    let thicknessSum = group[0].wall.thickness;
+    let thicknessCount = 1;
+    let gaps: Array<{ start: number; end: number }> = [];
+
+    const flush = () => {
+      const fixed = fixedWeight > 0 ? fixedWeighted / fixedWeight : seed.fixed;
+      const id = `wall-${Math.random().toString(36).slice(2, 10)}`;
+      const wall: Wall = seed.horizontal
+        ? {
+            id,
+            a: { x: clusterStart, y: fixed },
+            b: { x: clusterEnd, y: fixed },
+            thickness: thicknessSum / thicknessCount,
+          }
+        : {
+            id,
+            a: { x: fixed, y: clusterStart },
+            b: { x: fixed, y: clusterEnd },
+            thickness: thicknessSum / thicknessCount,
+          };
+      canonical.push(wall);
+      const total = Math.max(1, clusterEnd - clusterStart);
+      for (const gap of gaps) {
+        const widthPx = gap.end - gap.start;
+        const widthM = widthPx * metersPerPixel;
+        const center = (gap.start + gap.end) / 2;
+        inferred.push({
+          id: `opening-${Math.random().toString(36).slice(2, 10)}`,
+          wallId: id,
+          kind: widthM <= 1.18 ? "door" : "window",
+          centerT: Math.max(0, Math.min(1, (center - clusterStart) / total)),
+          widthM: Math.max(0.65, Math.min(2.1, widthM)),
+          heightM: widthM <= 1.18 ? 2.2 : 1.35,
+          sillM: widthM <= 1.18 ? 0 : 0.9,
+        });
+      }
+    };
+
+    for (let i = 1; i < group.length; i++) {
+      const current = group[i];
+      const gap = current.start - clusterEnd;
+      if (gap <= maxOpeningPx) {
+        if (gap >= minOpeningPx) gaps.push({ start: clusterEnd, end: current.start });
+        clusterEnd = Math.max(clusterEnd, current.end);
+        const weight = current.end - current.start;
+        fixedWeighted += current.fixed * weight;
+        fixedWeight += weight;
+        thicknessSum += current.wall.thickness;
+        thicknessCount++;
+      } else {
+        flush();
+        clusterStart = current.start;
+        clusterEnd = current.end;
+        const weight = current.end - current.start;
+        fixedWeighted = current.fixed * weight;
+        fixedWeight = weight;
+        thicknessSum = current.wall.thickness;
+        thicknessCount = 1;
+        gaps = [];
+      }
+    }
+    flush();
+  }
+
+  return { walls: canonical, openings: inferred };
+}
