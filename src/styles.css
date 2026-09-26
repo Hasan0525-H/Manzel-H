@@ -205,3 +205,17 @@ button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
 .quality-item.error { background: #fff1f2; color: #9f1239; }
 .quality-item.warning { background: #fffbeb; color: #92400e; }
 .quality-item.info { background: #eff6ff; color: #1d4ed8; }
+
+.three-actions {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  left: 12px;
+  direction: rtl;
+}
+.three-actions button {
+  background: rgba(17,26,41,.9);
+  color: #fff;
+  border-color: rgba(255,255,255,.18);
+  backdrop-filter: blur(8px);
+}
