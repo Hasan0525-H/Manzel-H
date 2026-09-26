@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
+import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
 import type { Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
 
 type Tool = "select" | "calibrate" | "wall" | "door" | "window";
@@ -290,9 +290,10 @@ function App() {
       if (merged.length >= 180) break;
     }
 
-    setWalls(merged);
-    setOpenings([]);
-    setMessage(`تم اقتراح ${merged.length} جدارًا. تم تشغيل كشف الغرف تلقائيًا؛ راجع النتيجة ثم أضف الفتحات.`);
+    const canonical = canonicalizeAndInferOpenings(merged, metersPerPixel);
+    setWalls(canonical.walls);
+    setOpenings(canonical.openings);
+    setMessage(`تم توحيد ${canonical.walls.length} جدارًا واكتشاف ${canonical.openings.length} فتحة محتملة. راجع النتيجة قبل اعتماد 3D.`);
   };
 
   const removeWall = (id: string) => {
