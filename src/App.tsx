@@ -3,12 +3,12 @@ import { analyzeWithRemote } from "./analyzer";
 import { canonicalizeAndInferOpenings, detectRooms, snapOrthogonalIntersections } from "./geometry";
 import { rasterizePlanFile } from "./importers";
 import { analyzePlanLocally } from "./planAnalysis";
-import { buildHouseInCloud, renderImageInCloud, type CloudHouseArgs, type DesignOptions } from "./cloudBuilder";
+import { renderImageInCloud, type CloudHouseArgs, type DesignOptions } from "./cloudBuilder";
 import ThreeScene from "./ThreeScene";
 import type { Column, Opening, Room, Stair, Wall } from "./types";
 
 type Phase = "upload" | "setup" | "analyzing" | "white" | "building" | "result";
-type ResultTab = "interior" | "exterior" | "3d";
+type ResultTab = "interior" | "exterior";
 
 const DEFAULT_SCALE = 0.02;
 
@@ -38,7 +38,6 @@ export default function App() {
   const [wallHeight, setWallHeight] = useState(3.2);
   const [wallThicknessM] = useState(0.2);
   const [options, setOptions] = useState<DesignOptions>(defaultOptions);
-  const [cloudModelUrl, setCloudModelUrl] = useState<string | null>(null);
   const [interiorUrl, setInteriorUrl] = useState<string | null>(null);
   const [exteriorUrl, setExteriorUrl] = useState<string | null>(null);
   const [resultTab, setResultTab] = useState<ResultTab>("interior");
@@ -60,10 +59,10 @@ export default function App() {
 
   useEffect(() => () => {
     if (progressTimer.current) window.clearInterval(progressTimer.current);
-    [cloudModelUrl, interiorUrl, exteriorUrl].forEach((url) => {
+    [interiorUrl, exteriorUrl].forEach((url) => {
       if (url) URL.revokeObjectURL(url);
     });
-  }, [cloudModelUrl, interiorUrl, exteriorUrl]);
+  }, [interiorUrl, exteriorUrl]);
 
   const outputsLabel = useMemo(() => {
     if (options.outputs.length === 2) return "داخلي + خارجي";
@@ -192,9 +191,7 @@ export default function App() {
     setPhase("building");
 
     try {
-      const tasks: Array<Promise<{ kind: "model" | "interior" | "exterior"; url: string }>> = [
-        buildHouseInCloud(args).then((url) => ({ kind: "model" as const, url })),
-      ];
+      const tasks: Array<Promise<{ kind: "interior" | "exterior"; url: string }>> = [];
       if (options.outputs.includes("interior")) {
         tasks.push(renderImageInCloud("interior", args).then((url) => ({ kind: "interior" as const, url })));
       }
@@ -203,45 +200,41 @@ export default function App() {
       }
 
       const settled = await Promise.allSettled(tasks);
-      let model: string | null = null;
       let interior: string | null = null;
       let exterior: string | null = null;
 
       for (const item of settled) {
         if (item.status !== "fulfilled") continue;
-        if (item.value.kind === "model") model = item.value.url;
         if (item.value.kind === "interior") interior = item.value.url;
         if (item.value.kind === "exterior") exterior = item.value.url;
       }
 
-      if (!model && !interior && !exterior) throw new Error("cloud-failed");
+      if (!interior && !exterior) throw new Error("render-unavailable");
 
-      if (cloudModelUrl) URL.revokeObjectURL(cloudModelUrl);
       if (interiorUrl) URL.revokeObjectURL(interiorUrl);
       if (exteriorUrl) URL.revokeObjectURL(exteriorUrl);
-      setCloudModelUrl(model);
       setInteriorUrl(interior);
       setExteriorUrl(exterior);
 
       if (interior) setResultTab("interior");
-      else if (exterior) setResultTab("exterior");
-      else setResultTab("3d");
+      else setResultTab("exterior");
 
       await finishProgress();
       setPhase("result");
-    } catch {
+    } catch (error) {
       if (progressTimer.current) window.clearInterval(progressTimer.current);
       progressTimer.current = null;
-      setError("تعذر إنشاء النتيجة");
+      setError(error instanceof Error && error.message.includes("503")
+        ? "الرندر الاحترافي يحتاج تفعيل منصة الذكاء الاصطناعي"
+        : "تعذر إنشاء الرندر الاحترافي");
       setPhase("white");
     }
   };
 
   const clearResults = () => {
-    [cloudModelUrl, interiorUrl, exteriorUrl].forEach((url) => {
+    [interiorUrl, exteriorUrl].forEach((url) => {
       if (url) URL.revokeObjectURL(url);
     });
-    setCloudModelUrl(null);
     setInteriorUrl(null);
     setExteriorUrl(null);
   };
@@ -406,32 +399,14 @@ export default function App() {
           <div className="final-stage">
             {resultTab === "interior" && interiorUrl && <img className="final-image" src={interiorUrl} alt="" />}
             {resultTab === "exterior" && exteriorUrl && <img className="final-image" src={exteriorUrl} alt="" />}
-            {resultTab === "3d" && (
-              <ThreeScene
-                walls={walls}
-                openings={openings}
-                rooms={rooms}
-                columns={columns}
-                stairs={stairs}
-                exteriorWallIds={exteriorWallIds}
-                imageSize={imageSize}
-                metersPerPixel={metersPerPixel}
-                wallHeight={wallHeight}
-                wallThicknessM={wallThicknessM}
-                style={options.style}
-                mode="real"
-                modelUrl={cloudModelUrl || undefined}
-              />
-            )}
           </div>
 
           <nav className="result-tabs">
             {interiorUrl && <button className={resultTab === "interior" ? "active" : ""} onClick={() => setResultTab("interior")}>داخلي</button>}
             {exteriorUrl && <button className={resultTab === "exterior" ? "active" : ""} onClick={() => setResultTab("exterior")}>واجهة</button>}
-            <button className={resultTab === "3d" ? "active" : ""} onClick={() => setResultTab("3d")}>3D</button>
           </nav>
         </main>
-      )}
+      )}}
     </div>
   );
 }
