@@ -1,47 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
+import type { Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
+import { validateReconstruction } from "./validation";
+import { analyzeWithRemote } from "./analyzer";
 
-type Point = { x: number; y: number };
-type Wall = { id: string; a: Point; b: Point; thickness: number };
-type Opening = {
-  id: string;
-  wallId: string;
-  kind: "door" | "window";
-  centerT: number;
-  widthM: number;
-  heightM: number;
-  sillM: number;
-};
 type Tool = "select" | "calibrate" | "wall" | "door" | "window";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-function dist(a: Point, b: Point) {
-  return Math.hypot(b.x - a.x, b.y - a.y);
-}
-
-function snapPoint(p: Point, step = 5): Point {
-  return { x: Math.round(p.x / step) * step, y: Math.round(p.y / step) * step };
-}
-
-function projectToSegment(p: Point, a: Point, b: Point) {
-  const vx = b.x - a.x;
-  const vy = b.y - a.y;
-  const len2 = vx * vx + vy * vy || 1;
-  const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2));
-  const q = { x: a.x + vx * t, y: a.y + vy * t };
-  return { t, q, distance: dist(p, q) };
-}
-
-function pointOnWall(w: Wall, t: number): Point {
-  return { x: w.a.x + (w.b.x - w.a.x) * t, y: w.a.y + (w.b.y - w.a.y) * t };
-}
-
 function App() {
   const [imageUrl, setImageUrl] = useState("");
+  const [imageDataUrl, setImageDataUrl] = useState("");
   const [imageSize, setImageSize] = useState({ w: 1200, h: 800 });
   const [walls, setWalls] = useState<Wall[]>([]);
   const [openings, setOpenings] = useState<Opening[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [exteriorWallIds, setExteriorWallIds] = useState<string[]>([]);
+  const [roomNames, setRoomNames] = useState<Record<string, string>>({});
   const [tool, setTool] = useState<Tool>("select");
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [calibration, setCalibration] = useState<Point[]>([]);
@@ -51,25 +27,63 @@ function App() {
   const [wallThicknessM, setWallThicknessM] = useState(0.2);
   const [style, setStyle] = useState("سعودي حديث");
   const [view, setView] = useState<"2d" | "3d" | "split">("split");
+  const [ceilingVisible, setCeilingVisible] = useState(false);
+  const [roofVisible, setRoofVisible] = useState(true);
+  const [siteWallVisible, setSiteWallVisible] = useState(true);
   const [message, setMessage] = useState("ارفع المخطط، ثم عاير القياس من بُعد معروف.");
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const importRef = useRef<HTMLInputElement | null>(null);
 
   const scaleReady = !!metersPerPixel && metersPerPixel > 0;
+  const totalWallLength = useMemo(
+    () => scaleReady ? walls.reduce((sum, w) => sum + dist(w.a, w.b) * metersPerPixel!, 0) : null,
+    [walls, metersPerPixel, scaleReady]
+  );
+  const totalRoomArea = useMemo(() => rooms.reduce((s, r) => s + r.areaM2, 0), [rooms]);
+  const validationIssues = useMemo(() => validateReconstruction(walls, openings, rooms, metersPerPixel), [walls, openings, rooms, metersPerPixel]);
+  const errorCount = validationIssues.filter((issue) => issue.severity === "error").length;
+  const warningCount = validationIssues.filter((issue) => issue.severity === "warning").length;
 
-  const totalWallLength = useMemo(() => {
-    if (!scaleReady) return null;
-    return walls.reduce((sum, w) => sum + dist(w.a, w.b) * metersPerPixel!, 0);
-  }, [walls, metersPerPixel, scaleReady]);
+  useEffect(() => {
+    if (!scaleReady || walls.length < 4) {
+      setRooms([]);
+      setExteriorWallIds([]);
+      return;
+    }
+    const reconstruction = detectRooms(walls, metersPerPixel, roomNames);
+    setRooms(reconstruction.rooms);
+    setExteriorWallIds(reconstruction.exteriorWallIds);
+  }, [walls, metersPerPixel, roomNames, scaleReady]);
 
-  const onUpload = (file?: File) => {
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      const snapshot = createSnapshot(false);
+      localStorage.setItem("manzel-h-autosave", JSON.stringify(snapshot));
+    }, 500);
+    return () => clearTimeout(id);
+  }, [walls, openings, rooms, metersPerPixel, wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible]);
+
+  const readAsDataUrl = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+
+  const onUpload = async (file?: File) => {
     if (!file) return;
     const url = URL.createObjectURL(file);
+    const dataUrl = await readAsDataUrl(file);
     const img = new Image();
     img.onload = () => {
       setImageSize({ w: img.naturalWidth, h: img.naturalHeight });
       setImageUrl(url);
+      setImageDataUrl(dataUrl);
       setWalls([]);
       setOpenings([]);
+      setRooms([]);
+      setRoomNames({});
       setCalibration([]);
       setMetersPerPixel(null);
       setMessage("تم رفع المخطط. عاير القياس أولاً للحصول على أبعاد حقيقية.");
@@ -163,7 +177,20 @@ function App() {
 
   const autoTrace = async () => {
     if (!imageUrl) return;
-    setMessage("جاري اقتراح الجدران من الصورة...");
+    setMessage("جاري تحليل الجدران...");
+
+    try {
+      const remote = await analyzeWithRemote(imageUrl);
+      if (remote && remote.walls.length) {
+        const canonical = canonicalizeAndInferOpenings(remote.walls, metersPerPixel);
+        setWalls(canonical.walls);
+        setOpenings(canonical.openings);
+        setMessage(`المحلل السحابي اقترح ${canonical.walls.length} جدارًا و${canonical.openings.length} فتحة محتملة. راجع الهندسة قبل الاعتماد.`);
+        return;
+      }
+    } catch {
+      setMessage("تعذر المحلل السحابي؛ تم التحويل تلقائيًا إلى التحليل المحلي.");
+    }
     const img = new Image();
     img.src = imageUrl;
     await img.decode();
@@ -226,55 +253,39 @@ function App() {
     const k = 1 / sc;
     const minRun = Math.max(35, Math.floor(Math.min(w, h) * 0.055));
 
-    for (const y of rows) {
-      let start = -1, misses = 0;
-      for (let x = 0; x <= w; x++) {
-        const on = x < w && isWallPixel(x, y);
-        if (on) {
-          if (start < 0) start = x;
-          misses = 0;
-        } else if (start >= 0) {
-          misses++;
-          if (misses > 5 || x === w) {
-            const end = x - misses;
-            if (end - start >= minRun) {
-              candidates.push({
-                id: uid(),
-                a: { x: start * k, y: y * k },
-                b: { x: end * k, y: y * k },
-                thickness: scaleReady ? wallThicknessM / metersPerPixel! : 12,
-              });
+    const collectRuns = (horizontal: boolean, coords: number[]) => {
+      for (const fixed of coords) {
+        let start = -1, misses = 0;
+        const limit = horizontal ? w : h;
+        for (let variable = 0; variable <= limit; variable++) {
+          const x = horizontal ? variable : fixed;
+          const y = horizontal ? fixed : variable;
+          const on = variable < limit && isWallPixel(x, y);
+          if (on) {
+            if (start < 0) start = variable;
+            misses = 0;
+          } else if (start >= 0) {
+            misses++;
+            if (misses > 5 || variable === limit) {
+              const end = variable - misses;
+              if (end - start >= minRun) {
+                candidates.push({
+                  id: uid(),
+                  a: horizontal ? { x: start * k, y: fixed * k } : { x: fixed * k, y: start * k },
+                  b: horizontal ? { x: end * k, y: fixed * k } : { x: fixed * k, y: end * k },
+                  thickness: scaleReady ? wallThicknessM / metersPerPixel! : 12,
+                });
+              }
+              start = -1;
+              misses = 0;
             }
-            start = -1; misses = 0;
           }
         }
       }
-    }
+    };
 
-    for (const x of cols) {
-      let start = -1, misses = 0;
-      for (let y = 0; y <= h; y++) {
-        const on = y < h && isWallPixel(x, y);
-        if (on) {
-          if (start < 0) start = y;
-          misses = 0;
-        } else if (start >= 0) {
-          misses++;
-          if (misses > 5 || y === h) {
-            const end = y - misses;
-            if (end - start >= minRun) {
-              candidates.push({
-                id: uid(),
-                a: { x: x * k, y: start * k },
-                b: { x: x * k, y: end * k },
-                thickness: scaleReady ? wallThicknessM / metersPerPixel! : 12,
-              });
-            }
-            start = -1; misses = 0;
-          }
-        }
-      }
-    }
+    collectRuns(true, rows);
+    collectRuns(false, cols);
 
     const merged: Wall[] = [];
     for (const wall of candidates) {
@@ -297,9 +308,10 @@ function App() {
       if (merged.length >= 180) break;
     }
 
-    setWalls(merged);
-    setOpenings([]);
-    setMessage(`تم اقتراح ${merged.length} جدارًا. راجعها ثم أضف الأبواب والنوافذ.`);
+    const canonical = canonicalizeAndInferOpenings(merged, metersPerPixel);
+    setWalls(canonical.walls);
+    setOpenings(canonical.openings);
+    setMessage(`تم توحيد ${canonical.walls.length} جدارًا واكتشاف ${canonical.openings.length} فتحة محتملة. راجع النتيجة قبل اعتماد 3D.`);
   };
 
   const removeWall = (id: string) => {
@@ -309,35 +321,91 @@ function App() {
 
   const removeOpening = (id: string) => setOpenings((v) => v.filter((o) => o.id !== id));
 
-  const exportJson = () => {
-    const payload = {
-      version: 2,
+  const roomKey = (room: Room) => `${Math.round(room.centroid.x / 10)}:${Math.round(room.centroid.y / 10)}`;
+  const renameRoom = (room: Room, name: string) => {
+    const key = roomKey(room);
+    setRoomNames((prev) => ({ ...prev, [key]: name }));
+  };
+
+  function createSnapshot(includeImage = true): ProjectSnapshot {
+    return {
+      version: 3,
       units: scaleReady ? "meter" : "pixel",
-      image: { width: imageSize.w, height: imageSize.h },
+      image: {
+        width: imageSize.w,
+        height: imageSize.h,
+        ...(includeImage && imageDataUrl ? { dataUrl: imageDataUrl } : {}),
+      },
       calibration: { knownMeters, metersPerPixel },
-      building: { wallHeight, wallThicknessM, style },
-      walls: walls.map((w) => ({
-        id: w.id,
-        a: scaleReady ? { x: w.a.x * metersPerPixel!, y: w.a.y * metersPerPixel! } : w.a,
-        b: scaleReady ? { x: w.b.x * metersPerPixel!, y: w.b.y * metersPerPixel! } : w.b,
-        thickness: scaleReady ? w.thickness * metersPerPixel! : w.thickness,
-      })),
+      building: { wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible },
+      walls,
       openings,
+      rooms,
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  }
+
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify(createSnapshot(true), null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "manzel-h-plan.json";
+    a.download = "manzel-h-project.json";
     a.click();
     URL.revokeObjectURL(a.href);
+  };
+
+  const loadSnapshot = (snapshot: ProjectSnapshot) => {
+    setImageSize({ w: snapshot.image.width, h: snapshot.image.height });
+    if (snapshot.image.dataUrl) {
+      setImageDataUrl(snapshot.image.dataUrl);
+      setImageUrl(snapshot.image.dataUrl);
+    }
+    setKnownMeters(snapshot.calibration.knownMeters);
+    setMetersPerPixel(snapshot.calibration.metersPerPixel);
+    setWallHeight(snapshot.building.wallHeight);
+    setWallThicknessM(snapshot.building.wallThicknessM);
+    setStyle(snapshot.building.style);
+    setCeilingVisible(snapshot.building.ceilingVisible ?? false);
+    setRoofVisible(snapshot.building.roofVisible ?? true);
+    setSiteWallVisible(snapshot.building.siteWallVisible ?? true);
+    setWalls(snapshot.walls || []);
+    setOpenings(snapshot.openings || []);
+    const names: Record<string, string> = {};
+    for (const room of snapshot.rooms || []) names[roomKey(room)] = room.name;
+    setRoomNames(names);
+    setMessage("تم استيراد المشروع بنجاح.");
+  };
+
+  const importProject = async (file?: File) => {
+    if (!file) return;
+    try {
+      const snapshot = JSON.parse(await file.text()) as ProjectSnapshot;
+      if (!snapshot || snapshot.version !== 3 || !Array.isArray(snapshot.walls)) throw new Error("invalid");
+      loadSnapshot(snapshot);
+    } catch {
+      setMessage("ملف المشروع غير صالح أو من إصدار غير مدعوم.");
+    }
+  };
+
+  const restoreAutosave = () => {
+    const raw = localStorage.getItem("manzel-h-autosave");
+    if (!raw) {
+      setMessage("لا توجد مسودة محفوظة على هذا الجهاز.");
+      return;
+    }
+    try {
+      loadSnapshot(JSON.parse(raw) as ProjectSnapshot);
+      setMessage("تمت استعادة آخر مسودة محلية.");
+    } catch {
+      setMessage("تعذر استعادة المسودة.");
+    }
   };
 
   return (
     <div className="app">
       <header className="topbar">
         <div>
-          <div className="brand">منزل H <span>ENGINE</span></div>
-          <div className="subtitle">المخطط أولاً • هندسة ثابتة • طراز سعودي فوقها</div>
+          <div className="brand">منزل H <span>ENGINE V2</span></div>
+          <div className="subtitle">هندسة قابلة للمراجعة • غرف تلقائية • فتحات حقيقية • هوية سعودية</div>
         </div>
         <div className="view-switch">
           {(["2d", "split", "3d"] as const).map((v) => (
@@ -354,9 +422,12 @@ function App() {
         <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
         <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>باب</button>
         <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>نافذة</button>
-        <button onClick={autoTrace} disabled={!imageUrl}>اقتراح الجدران</button>
-        <button onClick={() => { setWalls([]); setOpenings([]); }} disabled={!walls.length}>مسح</button>
-        <button onClick={exportJson} disabled={!walls.length}>تصدير JSON</button>
+        <button onClick={autoTrace} disabled={!imageUrl}>تحليل الجدران</button>
+        <button onClick={() => { setWalls([]); setOpenings([]); setRooms([]); }} disabled={!walls.length}>مسح</button>
+        <button onClick={exportJson} disabled={!walls.length}>تصدير مشروع</button>
+        <button onClick={() => importRef.current?.click()}>استيراد مشروع</button>
+        <input ref={importRef} hidden type="file" accept=".json,application/json" onChange={(e) => importProject(e.target.files?.[0])} />
+        <button onClick={restoreAutosave}>استعادة المسودة</button>
       </section>
 
       <section className="status">{message}</section>
@@ -368,18 +439,30 @@ function App() {
               <div className="empty">
                 <div className="upload-mark">＋</div>
                 <h2>ارفع صورة المخطط</h2>
-                <p>المعايرة بنقطتين تجعل كل جدار وكل فتحة تُحفظ بوحدة حقيقية.</p>
+                <p>المعايرة بنقطتين تجعل كل جدار وفتحة وغرفة تُحفظ بوحدة حقيقية.</p>
               </div>
             ) : (
               <svg ref={svgRef} className="plan" viewBox={`0 0 ${imageSize.w} ${imageSize.h}`} onClick={onCanvasClick}>
-                <image href={imageUrl} x="0" y="0" width={imageSize.w} height={imageSize.h} opacity="0.48" />
+                <image href={imageUrl} x="0" y="0" width={imageSize.w} height={imageSize.h} opacity="0.42" />
+                {rooms.flatMap((room) =>
+                  room.cells.map((cell, i) => (
+                    <rect key={`${room.id}-${i}`} x={cell.x1} y={cell.y1} width={cell.x2 - cell.x1} height={cell.y2 - cell.y1} className="room-fill" />
+                  ))
+                )}
+                {rooms.map((room) => (
+                  <g key={room.id} className="room-label">
+                    <rect x={room.centroid.x - 52} y={room.centroid.y - 22} width="104" height="44" rx="8" />
+                    <text x={room.centroid.x} y={room.centroid.y - 3}>{room.name}</text>
+                    <text x={room.centroid.x} y={room.centroid.y + 14}>{room.areaM2.toFixed(1)} م²</text>
+                  </g>
+                ))}
                 {walls.map((w) => (
                   <line
                     key={w.id}
                     x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y}
                     strokeWidth={Math.max(4, w.thickness)}
                     strokeLinecap="square"
-                    className="wall-line"
+                    className={exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"}
                     onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); }}
                   />
                 ))}
@@ -412,11 +495,16 @@ function App() {
             <ThreePreview
               walls={walls}
               openings={openings}
+              rooms={rooms}
+              exteriorWallIds={exteriorWallIds}
               imageSize={imageSize}
               metersPerPixel={metersPerPixel}
               wallHeight={wallHeight}
               wallThicknessM={wallThicknessM}
               style={style}
+              ceilingVisible={ceilingVisible}
+              roofVisible={roofVisible}
+              siteWallVisible={siteWallVisible}
             />
           </section>
         )}
@@ -442,14 +530,50 @@ function App() {
             </select>
           </label>
         </div>
+
+        <div className="toggle-row">
+          <label><input type="checkbox" checked={roofVisible} onChange={(e) => setRoofVisible(e.target.checked)} /> سقف</label>
+          <label><input type="checkbox" checked={ceilingVisible} onChange={(e) => setCeilingVisible(e.target.checked)} /> سقف داخلي</label>
+          <label><input type="checkbox" checked={siteWallVisible} onChange={(e) => setSiteWallVisible(e.target.checked)} /> سور خارجي</label>
+        </div>
+
         <div className="metrics">
           <span><b>{walls.length}</b> جدار</span>
+          <span><b>{exteriorWallIds.length}</b> خارجي</span>
           <span><b>{openings.filter((o) => o.kind === "door").length}</b> باب</span>
           <span><b>{openings.filter((o) => o.kind === "window").length}</b> نافذة</span>
+          <span><b>{rooms.length}</b> مساحة مغلقة</span>
+          <span><b>{totalRoomArea ? `${totalRoomArea.toFixed(1)} م²` : "—"}</b> مساحة داخلية</span>
           <span><b>{scaleReady ? `${(metersPerPixel! * 1000).toFixed(2)} مم/px` : "غير معاير"}</b> مقياس</span>
           <span><b>{totalWallLength ? `${totalWallLength.toFixed(1)} م` : "—"}</b> أطوال الجدران</span>
         </div>
-        <div className="help">حذف جدار أو فتحة: نقرتان متتاليتان عليها. الفتحات في 3D تُقص فعليًا من الجدار وليست مجرد رموز.</div>
+
+        {!!rooms.length && (
+          <div className="room-editor">
+            <strong>أسماء الغرف</strong>
+            <div className="room-editor-grid">
+              {rooms.map((room) => (
+                <label key={room.id}>
+                  <input value={room.name} onChange={(e) => renameRoom(room, e.target.value)} />
+                  <small>{room.areaM2.toFixed(1)} م²</small>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="quality-panel">
+          <div className="quality-head">
+            <strong>فحص الهندسة</strong>
+            <span className={errorCount ? "quality-bad" : warningCount ? "quality-warn" : "quality-good"}>
+              {errorCount ? `${errorCount} خطأ` : warningCount ? `${warningCount} تنبيه` : "جاهز للمراجعة"}
+            </span>
+          </div>
+          {validationIssues.map((issue) => (
+            <div key={issue.code + issue.message} className={`quality-item ${issue.severity}`}>{issue.message}</div>
+          ))}
+        </div>
+        <div className="help">الجدران الخارجية تظهر بلون مختلف. كشف الغرف يعتمد على حلقات الجدران المغلقة. حذف جدار أو فتحة: نقرتان متتاليتان عليها.</div>
       </aside>
     </div>
   );
@@ -458,46 +582,81 @@ function App() {
 function ThreePreview(props: {
   walls: Wall[];
   openings: Opening[];
+  rooms: Room[];
+  exteriorWallIds: string[];
   imageSize: { w: number; h: number };
   metersPerPixel: number | null;
   wallHeight: number;
   wallThicknessM: number;
   style: string;
+  ceilingVisible: boolean;
+  roofVisible: boolean;
+  siteWallVisible: boolean;
 }) {
   const mount = useRef<HTMLDivElement | null>(null);
+  const exportRoot = useRef<THREE.Group | null>(null);
+
+  const exportGlb = async () => {
+    if (!exportRoot.current) return;
+    const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
+    const exporter = new GLTFExporter();
+    exporter.parse(
+      exportRoot.current,
+      (result) => {
+        if (!(result instanceof ArrayBuffer)) return;
+        const blob = new Blob([result], { type: "model/gltf-binary" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "manzel-h-house.glb";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      },
+      (error) => console.error(error),
+      { binary: true, onlyVisible: true }
+    );
+  };
 
   useEffect(() => {
     if (!mount.current) return;
     const el = mount.current;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf0ede6);
+    scene.background = new THREE.Color(0xe9e4da);
+    scene.fog = new THREE.Fog(0xe9e4da, 45, 110);
 
     const camera = new THREE.PerspectiveCamera(45, el.clientWidth / Math.max(el.clientHeight, 1), 0.1, 500);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(el.clientWidth, el.clientHeight);
     renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     el.replaceChildren(renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7761, 2.15));
-    const sun = new THREE.DirectionalLight(0xffffff, 2.7);
-    sun.position.set(12, 24, 8);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7761, 2.0));
+    const sun = new THREE.DirectionalLight(0xfff4df, 3.0);
+    sun.position.set(18, 26, 12);
     sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
     scene.add(sun);
 
     const scale = props.metersPerPixel ?? 0.02;
     const cx = props.imageSize.w * scale / 2;
     const cy = props.imageSize.h * scale / 2;
     const group = new THREE.Group();
+    exportRoot.current = group;
 
-    const palette: Record<string, number> = {
-      "سعودي حديث": 0xe7dfd2,
-      "نجدي حديث": 0xc7a477,
-      "حجازي حديث": 0xead6b8,
-      "Minimal دافئ": 0xf1ece4,
+    const palette: Record<string, { wall: number; accent: number; floor: number; roof: number }> = {
+      "سعودي حديث": { wall: 0xe7dfd2, accent: 0x6d5841, floor: 0xd6c8b5, roof: 0xc8b89f },
+      "نجدي حديث": { wall: 0xc7a477, accent: 0x704c2f, floor: 0xc6a47d, roof: 0xa47f58 },
+      "حجازي حديث": { wall: 0xead6b8, accent: 0x365b6d, floor: 0xdcc5a5, roof: 0xbea17d },
+      "Minimal دافئ": { wall: 0xf1ece4, accent: 0x75695b, floor: 0xd9d0c5, roof: 0xc8c0b6 },
     };
-    const wallMat = new THREE.MeshStandardMaterial({ color: palette[props.style] ?? 0xe7dfd2, roughness: 0.72 });
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3b342c, roughness: 0.6 });
+    const colors = palette[props.style] ?? palette["سعودي حديث"];
+    const wallMat = new THREE.MeshStandardMaterial({ color: colors.wall, roughness: 0.72 });
+    const exteriorMat = new THREE.MeshStandardMaterial({ color: colors.wall, roughness: 0.6 });
+    const accentMat = new THREE.MeshStandardMaterial({ color: colors.accent, roughness: 0.68 });
+    const glassMat = new THREE.MeshStandardMaterial({ color: 0x9cc6d7, roughness: 0.1, metalness: 0.08, transparent: true, opacity: 0.48 });
+    const floorMat = new THREE.MeshStandardMaterial({ color: colors.floor, roughness: 0.9 });
+    const roofMat = new THREE.MeshStandardMaterial({ color: colors.roof, roughness: 0.8 });
 
     const addBox = (length: number, height: number, thickness: number, x: number, y: number, z: number, angle: number, mat = wallMat) => {
       if (length <= 0.02 || height <= 0.02) return;
@@ -517,72 +676,134 @@ function ThreePreview(props: {
       if (length < 0.05) continue;
       const angle = -Math.atan2(dz, dx);
       const thickness = props.metersPerPixel ? Math.max(0.08, wall.thickness * scale) : props.wallThicknessM;
+      const baseMat = props.exteriorWallIds.includes(wall.id) ? exteriorMat : wallMat;
       const wallOpenings = props.openings.filter((o) => o.wallId === wall.id).sort((a, b) => a.centerT - b.centerT);
 
       if (!wallOpenings.length) {
-        addBox(length, props.wallHeight, thickness, (ax + bx) / 2, props.wallHeight / 2, (az + bz) / 2, angle);
-        continue;
-      }
+        addBox(length, props.wallHeight, thickness, (ax + bx) / 2, props.wallHeight / 2, (az + bz) / 2, angle, baseMat);
+      } else {
+        const ux = dx / length, uz = dz / length;
+        let cursor = 0;
+        for (const o of wallOpenings) {
+          const center = o.centerT * length;
+          const half = Math.min(o.widthM / 2, length * 0.45);
+          const start = Math.max(cursor, center - half);
+          const end = Math.min(length, center + half);
 
-      const ux = dx / length, uz = dz / length;
-      let cursor = 0;
-      for (const o of wallOpenings) {
-        const center = o.centerT * length;
-        const half = Math.min(o.widthM / 2, length * 0.45);
-        const start = Math.max(cursor, center - half);
-        const end = Math.min(length, center + half);
+          if (start > cursor) {
+            const seg = start - cursor;
+            const sMid = cursor + seg / 2;
+            addBox(seg, props.wallHeight, thickness, ax + ux * sMid, props.wallHeight / 2, az + uz * sMid, angle, baseMat);
+          }
 
-        if (start > cursor) {
-          const seg = start - cursor;
+          const openingWidth = Math.max(0.05, end - start);
+          const sill = Math.max(0, Math.min(o.sillM, props.wallHeight));
+          const top = Math.min(props.wallHeight, sill + o.heightM);
+          if (sill > 0.01) {
+            const m = start + openingWidth / 2;
+            addBox(openingWidth, sill, thickness, ax + ux * m, sill / 2, az + uz * m, angle, baseMat);
+          }
+          if (top < props.wallHeight - 0.01) {
+            const m = start + openingWidth / 2;
+            const h = props.wallHeight - top;
+            addBox(openingWidth, h, thickness, ax + ux * m, top + h / 2, az + uz * m, angle, baseMat);
+          }
+
+          const fm = start + openingWidth / 2;
+          if (o.kind === "window") {
+            addBox(openingWidth * 0.92, Math.max(0.35, o.heightM * 0.88), Math.max(0.035, thickness * 0.16), ax + ux * fm, sill + o.heightM / 2, az + uz * fm, angle, glassMat);
+            addBox(openingWidth, 0.07, thickness + 0.04, ax + ux * fm, sill + 0.035, az + uz * fm, angle, accentMat);
+            addBox(openingWidth, 0.07, thickness + 0.04, ax + ux * fm, top - 0.035, az + uz * fm, angle, accentMat);
+          } else {
+            addBox(openingWidth * 0.92, Math.max(0.2, o.heightM * 0.94), Math.max(0.035, thickness * 0.13), ax + ux * fm, o.heightM / 2, az + uz * fm, angle, accentMat);
+          }
+          cursor = Math.max(cursor, end);
+        }
+
+        if (cursor < length) {
+          const seg = length - cursor;
           const sMid = cursor + seg / 2;
-          addBox(seg, props.wallHeight, thickness, ax + ux * sMid, props.wallHeight / 2, az + uz * sMid, angle);
+          addBox(seg, props.wallHeight, thickness, ax + ux * sMid, props.wallHeight / 2, az + uz * sMid, angle, baseMat);
         }
-
-        const openingWidth = Math.max(0.05, end - start);
-        const sill = Math.max(0, Math.min(o.sillM, props.wallHeight));
-        const top = Math.min(props.wallHeight, sill + o.heightM);
-        if (sill > 0.01) {
-          const m = start + openingWidth / 2;
-          addBox(openingWidth, sill, thickness, ax + ux * m, sill / 2, az + uz * m, angle);
-        }
-        if (top < props.wallHeight - 0.01) {
-          const m = start + openingWidth / 2;
-          const h = props.wallHeight - top;
-          addBox(openingWidth, h, thickness, ax + ux * m, top + h / 2, az + uz * m, angle);
-        }
-
-        const fm = start + openingWidth / 2;
-        if (o.kind === "window") {
-          addBox(openingWidth, 0.07, thickness + 0.03, ax + ux * fm, sill + 0.035, az + uz * fm, angle, frameMat);
-        }
-        cursor = Math.max(cursor, end);
       }
 
-      if (cursor < length) {
-        const seg = length - cursor;
-        const sMid = cursor + seg / 2;
-        addBox(seg, props.wallHeight, thickness, ax + ux * sMid, props.wallHeight / 2, az + uz * sMid, angle);
+      if (props.exteriorWallIds.includes(wall.id) && props.style !== "Minimal دافئ") {
+        addBox(length, 0.14, thickness + 0.06, (ax + bx) / 2, props.wallHeight - 0.16, (az + bz) / 2, angle, accentMat);
       }
     }
-    scene.add(group);
+
+    for (const room of props.rooms) {
+      for (const cell of room.cells) {
+        const w = Math.max(0.02, (cell.x2 - cell.x1) * scale);
+        const h = Math.max(0.02, (cell.y2 - cell.y1) * scale);
+        const x = ((cell.x1 + cell.x2) / 2) * scale - cx;
+        const z = ((cell.y1 + cell.y2) / 2) * scale - cy;
+        const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.045, h), floorMat);
+        floor.position.set(x, 0.022, z);
+        floor.receiveShadow = true;
+        group.add(floor);
+
+        if (props.ceilingVisible) {
+          const ceiling = new THREE.Mesh(new THREE.BoxGeometry(w, 0.045, h), wallMat);
+          ceiling.position.set(x, props.wallHeight - 0.025, z);
+          group.add(ceiling);
+        }
+      }
+    }
+
+    if (props.roofVisible && props.rooms.length) {
+      for (const room of props.rooms) {
+        for (const cell of room.cells) {
+          const w = (cell.x2 - cell.x1) * scale + 0.18;
+          const h = (cell.y2 - cell.y1) * scale + 0.18;
+          const x = ((cell.x1 + cell.x2) / 2) * scale - cx;
+          const z = ((cell.y1 + cell.y2) / 2) * scale - cy;
+          const roof = new THREE.Mesh(new THREE.BoxGeometry(w, 0.16, h), roofMat);
+          roof.position.set(x, props.wallHeight + 0.1, z);
+          roof.castShadow = true;
+          group.add(roof);
+        }
+      }
+    }
 
     const planW = Math.max(10, props.imageSize.w * scale);
     const planH = Math.max(10, props.imageSize.h * scale);
+
+    if (props.siteWallVisible) {
+      const sw = planW + 3.2;
+      const sh = planH + 3.2;
+      const y = 0.9;
+      const t = 0.18;
+      addBox(sw, 1.8, t, 0, y, -sh / 2, 0, accentMat);
+      addBox(sw, 1.8, t, 0, y, sh / 2, 0, accentMat);
+      addBox(sh, 1.8, t, -sw / 2, y, 0, Math.PI / 2, accentMat);
+      addBox(sh, 1.8, t, sw / 2, y, 0, Math.PI / 2, accentMat);
+      const gate = new THREE.Mesh(new THREE.BoxGeometry(3.6, 1.6, 0.09), accentMat);
+      gate.position.set(0, 0.8, sh / 2 + 0.02);
+      group.add(gate);
+    }
+
+    scene.add(group);
+
     const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(planW + 4, planH + 4),
-      new THREE.MeshStandardMaterial({ color: 0xd8d0c3, roughness: 1 })
+      new THREE.PlaneGeometry(planW + 12, planH + 12),
+      new THREE.MeshStandardMaterial({ color: 0xcfc7b9, roughness: 1 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     scene.add(ground);
 
-    const grid = new THREE.GridHelper(Math.max(planW, planH) + 8, 24, 0x8c8275, 0xc7beb1);
-    grid.position.y = 0.003;
-    scene.add(grid);
+    const driveway = new THREE.Mesh(
+      new THREE.PlaneGeometry(4.2, Math.max(4, planH * 0.25)),
+      new THREE.MeshStandardMaterial({ color: 0x9a9389, roughness: 1 })
+    );
+    driveway.rotation.x = -Math.PI / 2;
+    driveway.position.set(0, 0.006, planH / 2 + Math.max(2, planH * 0.12));
+    scene.add(driveway);
 
     let dragging = false, lastX = 0, lastY = 0;
-    let yaw = 0.7, pitch = 0.72;
-    let radius = Math.max(18, Math.max(planW, planH) * 1.05);
+    let yaw = 0.72, pitch = 0.67;
+    let radius = Math.max(20, Math.max(planW, planH) * 1.2);
 
     const updateCamera = () => {
       pitch = Math.max(0.12, Math.min(1.42, pitch));
@@ -591,7 +812,7 @@ function ThreePreview(props: {
         Math.sin(pitch) * radius,
         Math.sin(yaw) * Math.cos(pitch) * radius
       );
-      camera.lookAt(0, 1.2, 0);
+      camera.lookAt(0, 1.3, 0);
     };
     updateCamera();
 
@@ -610,6 +831,7 @@ function ThreePreview(props: {
       radius = Math.max(5, Math.min(120, radius));
       updateCamera();
     };
+
     renderer.domElement.addEventListener("pointerdown", down);
     renderer.domElement.addEventListener("pointermove", move);
     renderer.domElement.addEventListener("pointerup", up);
@@ -630,18 +852,35 @@ function ThreePreview(props: {
     return () => {
       cancelAnimationFrame(frame);
       resize.disconnect();
+      exportRoot.current = null;
       renderer.dispose();
       renderer.domElement.removeEventListener("pointerdown", down);
       renderer.domElement.removeEventListener("pointermove", move);
       renderer.domElement.removeEventListener("pointerup", up);
       renderer.domElement.removeEventListener("wheel", wheel);
     };
-  }, [props.walls, props.openings, props.imageSize, props.metersPerPixel, props.wallHeight, props.wallThicknessM, props.style]);
+  }, [
+    props.walls,
+    props.openings,
+    props.rooms,
+    props.exteriorWallIds,
+    props.imageSize,
+    props.metersPerPixel,
+    props.wallHeight,
+    props.wallThicknessM,
+    props.style,
+    props.ceilingVisible,
+    props.roofVisible,
+    props.siteWallVisible,
+  ]);
 
   return (
     <div className="three-wrap" ref={mount}>
       {!props.walls.length && <div className="three-hint">اكتشف أو ارسم الجدران لتظهر هنا</div>}
-      <div className="three-badge">اسحب للدوران • عجلة للتقريب</div>
+      <div className="three-actions">
+        <button onClick={exportGlb} disabled={!props.walls.length}>تصدير GLB</button>
+      </div>
+      <div className="three-badge">أرضيات + سقف + سور • اسحب للدوران • عجلة للتقريب</div>
     </div>
   );
 }
