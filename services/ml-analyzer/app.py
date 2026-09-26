@@ -427,6 +427,7 @@ class HouseBuildRequest(BaseModel):
     wallHeight: float = 3.2
     wallThicknessM: float = 0.2
     style: str = "سعودي حديث"
+    exteriorWallIds: list[str] = []
 
 
 @app.post("/build-house")
