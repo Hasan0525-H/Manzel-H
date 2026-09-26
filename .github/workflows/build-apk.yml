@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - "main"
-      - "feat/instant-house-v9"
+      - "fix/stable-apk-signing-v9"
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
         with:
           node-version: 22
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
@@ -50,15 +50,27 @@ jobs:
           cd android
           ./gradlew assembleRelease
 
-      - name: Sign APK with stable key
+      - name: Create stable signing identity
         run: |
-          base64 -d android-signing/manzel-h.keystore.b64 > /tmp/manzel-h.keystore
+          python - <<'PY'
+          import hashlib
+          seed = hashlib.sha256(b"Manzel-H-stable-sideload-key-v9").digest()
+          der = bytes.fromhex("30310201010420") + seed + bytes.fromhex("a00a06082a8648ce3d030107")
+          open("/tmp/manzel-h-ec.der", "wb").write(der)
+          PY
+          openssl ec -inform DER -in /tmp/manzel-h-ec.der -out /tmp/manzel-h-ec.pem
+          openssl pkcs8 -topk8 -nocrypt -in /tmp/manzel-h-ec.pem -outform DER -out /tmp/manzel-h-key.pk8
+          openssl req -new -x509 -key /tmp/manzel-h-ec.pem -out /tmp/manzel-h-cert.pem -days 10000 -subj "/C=SA/O=Manzel H/CN=Manzel H"
+          openssl x509 -in /tmp/manzel-h-cert.pem -outform DER -out /tmp/manzel-h-cert.der
+
+      - name: Sign APK
+        run: |
           BUILD_TOOLS="$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
           UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           ALIGNED="/tmp/Manzel-H-aligned.apk"
           "$ANDROID_HOME/build-tools/$BUILD_TOOLS/zipalign" -f -v 4 "$UNSIGNED" "$ALIGNED"
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" sign             --ks /tmp/manzel-h.keystore             --ks-key-alias manzelh             --ks-pass pass:ManzelH2026             --key-pass pass:ManzelH2026             --out Manzel-H.apk             "$ALIGNED"
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose Manzel-H.apk
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" sign --key /tmp/manzel-h-key.pk8 --cert /tmp/manzel-h-cert.der --out Manzel-H.apk "$ALIGNED"
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs Manzel-H.apk
 
       - uses: actions/upload-artifact@v4
         with:
