@@ -59,6 +59,25 @@ export type Room = {
   name: string;
 };
 
+export type FloorLevel = {
+  id: string;
+  name: string;
+  elevationM: number;
+  heightM: number;
+  image: { width: number; height: number; dataUrl?: string };
+  calibration: {
+    knownMeters: number;
+    metersPerPixel: number | null;
+    evidence?: CalibrationEvidence[];
+    spreadPct?: number | null;
+  };
+  walls: Wall[];
+  openings: Opening[];
+  rooms: Room[];
+  columns: Column[];
+  stairs: Stair[];
+};
+
 export type Reconstruction = {
   rooms: Room[];
   columns?: Column[];
@@ -67,7 +86,7 @@ export type Reconstruction = {
 };
 
 export type ProjectSnapshot = {
-  version: 3 | 4 | 5;
+  version: 3 | 4 | 5 | 6;
   units: "meter" | "pixel";
   image: { width: number; height: number; dataUrl?: string };
   calibration: { knownMeters: number; metersPerPixel: number | null; evidence?: CalibrationEvidence[]; spreadPct?: number | null };
@@ -85,4 +104,6 @@ export type ProjectSnapshot = {
   rooms: Room[];
   columns?: Column[];
   stairs?: Stair[];
+  floors?: FloorLevel[];
+  activeFloorId?: string;
 };
