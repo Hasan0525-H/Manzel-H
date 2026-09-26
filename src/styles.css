@@ -288,3 +288,9 @@ button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
   stroke-dasharray: 7 4;
   cursor: pointer;
 }
+
+.selected-structural {
+  stroke: #dc2626 !important;
+  stroke-width: 4px !important;
+  filter: drop-shadow(0 0 5px rgba(220,38,38,.45));
+}
