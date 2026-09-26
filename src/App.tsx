@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
 import type { Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
 import { validateReconstruction } from "./validation";
+import { analyzeWithRemote } from "./analyzer";
 
 type Tool = "select" | "calibrate" | "wall" | "door" | "window";
 
@@ -177,6 +178,19 @@ function App() {
   const autoTrace = async () => {
     if (!imageUrl) return;
     setMessage("جاري تحليل الجدران...");
+
+    try {
+      const remote = await analyzeWithRemote(imageUrl);
+      if (remote && remote.walls.length) {
+        const canonical = canonicalizeAndInferOpenings(remote.walls, metersPerPixel);
+        setWalls(canonical.walls);
+        setOpenings(canonical.openings);
+        setMessage(`المحلل السحابي اقترح ${canonical.walls.length} جدارًا و${canonical.openings.length} فتحة محتملة. راجع الهندسة قبل الاعتماد.`);
+        return;
+      }
+    } catch {
+      setMessage("تعذر المحلل السحابي؛ تم التحويل تلقائيًا إلى التحليل المحلي.");
+    }
     const img = new Image();
     img.src = imageUrl;
     await img.decode();
