@@ -1,6 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { analyzeWithRemote } from "./analyzer";
-import { renderImageInCloud, type CloudHouseArgs, type DesignOptions } from "./cloudBuilder";
+import { renderPlanInCloud, type DesignOptions } from "./cloudBuilder";
 
 type Phase = "upload" | "setup" | "analyzing" | "building" | "result";
 type ResultTab = "interior" | "exterior";
@@ -82,43 +81,24 @@ export default function App() {
 
     setError("");
     startProgress();
-    setPhase("analyzing");
+    setPhase("building");
 
     try {
-      const result = await analyzeWithRemote(planFile, metersPerPixel);
-      if (!result?.walls?.length) throw new Error("no-walls");
-      await finishProgress();
-
-      const args: CloudHouseArgs = {
-        walls: result.walls,
-        openings: result.openings ?? [],
-        rooms: result.rooms ?? [],
-        imageSize: { w: result.width, h: result.height },
-        metersPerPixel,
-        wallHeight: 3.2,
-        wallThicknessM: 0.2,
-        exteriorWallIds: result.exteriorWallIds ?? [],
-        ...options,
-      };
-
-      startProgress();
-      setPhase("building");
-
       let interior: string | null = null;
       let exterior: string | null = null;
 
-      // Render sequentially to avoid bursting the free AI quota/concurrency.
-      // Quality is preferred over speed: give the primary 9B model one job at a time.
+      // Send the original plan directly to FLUX.2.
+      // No Torch/ML analysis runs on the phone or on the free Render instance.
       if (options.outputs.includes("interior")) {
         try {
-          interior = await renderImageInCloud("interior", args);
+          interior = await renderPlanInCloud("interior", planFile, options);
         } catch {
           interior = null;
         }
       }
       if (options.outputs.includes("exterior")) {
         try {
-          exterior = await renderImageInCloud("exterior", args);
+          exterior = await renderPlanInCloud("exterior", planFile, options);
         } catch {
           exterior = null;
         }
