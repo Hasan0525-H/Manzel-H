@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from pydantic import BaseModel, Field
 from house_builder import build_house_glb
-from fal_renderer import configured as fal_configured, render_with_fal
+from render_images_v2 import render_exterior, render_interior
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Yytsi/floorplan-to-3d-walls")
 DEVICE_NAME = os.getenv("DEVICE", "auto")
@@ -136,8 +136,8 @@ def health():
         "weights": app.state.weights_name,
         "model_loaded": app.state.model is not None,
         "house_builder": True,
-        "render_platform": "fal.ai",
-        "render_configured": fal_configured(),
+        "render_platform": "server-cpu",
+        "render_configured": True,
     }
 
 
