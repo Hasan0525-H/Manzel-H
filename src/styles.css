@@ -259,3 +259,18 @@ button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
   .precision-editor { grid-template-columns: 1fr; }
   .precision-editor > strong { grid-column: auto; }
 }
+
+.selected-opening {
+  stroke: #111827 !important;
+  stroke-width: 5px !important;
+  filter: drop-shadow(0 0 4px rgba(17,24,39,.35));
+}
+.opening-editor {
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+}
+@media (max-width: 900px) {
+  .opening-editor { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+}
+@media (max-width: 560px) {
+  .opening-editor { grid-template-columns: 1fr; }
+}
