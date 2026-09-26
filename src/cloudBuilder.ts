@@ -1,6 +1,6 @@
 import type { Opening, Room, Wall } from "./types";
 
-const CLOUD_HOUSE_URL = "https://manzel-h-studio-v142.onrender.com";
+const CLOUD_HOUSE_URL = "https://manzel-h-ai-v15.onrender.com";
 
 export type DesignOptions = {
   floors: number;
@@ -53,7 +53,7 @@ export async function renderImageInCloud(
   kind: "interior" | "exterior",
   args: CloudHouseArgs,
 ): Promise<string> {
-  const blob = await postBlob(`/render-image/${kind}`, args, 120000);
+  const blob = await postBlob(`/render-image/${kind}`, args, 180000);
   if (blob.size < 1000) throw new Error("Empty image");
   return URL.createObjectURL(blob);
 }
