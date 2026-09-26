@@ -1,6 +1,6 @@
 import type { Opening, Wall } from "./types";
 
-const CLOUD_HOUSE_URL = "https://manzel-h-ml-analyzer-v11.onrender.com";
+const CLOUD_HOUSE_URL = "https://manzel-h-cloud-v12.onrender.com";
 
 export async function buildHouseInCloud(args: {
   walls: Wall[];
