@@ -1,5 +1,12 @@
 export type Point = { x: number; y: number };
 
+export type CalibrationEvidence = {
+  id: string;
+  a: Point;
+  b: Point;
+  meters: number;
+};
+
 export type Wall = {
   id: string;
   a: Point;
@@ -40,10 +47,10 @@ export type Reconstruction = {
 };
 
 export type ProjectSnapshot = {
-  version: 3;
+  version: 3 | 4;
   units: "meter" | "pixel";
   image: { width: number; height: number; dataUrl?: string };
-  calibration: { knownMeters: number; metersPerPixel: number | null };
+  calibration: { knownMeters: number; metersPerPixel: number | null; evidence?: CalibrationEvidence[]; spreadPct?: number | null };
   building: {
     wallHeight: number;
     wallThicknessM: number;

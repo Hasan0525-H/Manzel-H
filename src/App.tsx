@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapPoint } from "./geometry";
-import type { Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
+import { canonicalizeAndInferOpenings, detectRooms, dist, pointOnWall, projectToSegment, snapOrthogonalIntersections, snapPoint } from "./geometry";
+import type { CalibrationEvidence, Opening, Point, ProjectSnapshot, Room, Wall } from "./types";
 import { validateReconstruction } from "./validation";
 import { analyzeWithRemote } from "./analyzer";
+import { createEvidence, robustScale } from "./calibration";
+import { rasterizePlanFile } from "./importers";
 
 type Tool = "select" | "calibrate" | "wall" | "door" | "window";
 
@@ -19,8 +21,12 @@ function App() {
   const [exteriorWallIds, setExteriorWallIds] = useState<string[]>([]);
   const [roomNames, setRoomNames] = useState<Record<string, string>>({});
   const [tool, setTool] = useState<Tool>("select");
+  const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
+  const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(null);
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [calibration, setCalibration] = useState<Point[]>([]);
+  const [calibrationEvidence, setCalibrationEvidence] = useState<CalibrationEvidence[]>([]);
+  const [calibrationSpreadPct, setCalibrationSpreadPct] = useState<number | null>(null);
   const [knownMeters, setKnownMeters] = useState(4);
   const [metersPerPixel, setMetersPerPixel] = useState<number | null>(null);
   const [wallHeight, setWallHeight] = useState(3.2);
@@ -63,32 +69,28 @@ function App() {
     return () => clearTimeout(id);
   }, [walls, openings, rooms, metersPerPixel, wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible]);
 
-  const readAsDataUrl = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-
   const onUpload = async (file?: File) => {
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    const dataUrl = await readAsDataUrl(file);
-    const img = new Image();
-    img.onload = () => {
-      setImageSize({ w: img.naturalWidth, h: img.naturalHeight });
-      setImageUrl(url);
-      setImageDataUrl(dataUrl);
+    try {
+      setMessage("جاري تجهيز المخطط...");
+      const raster = await rasterizePlanFile(file);
+      setImageSize({ w: raster.width, h: raster.height });
+      setImageUrl(raster.dataUrl);
+      setImageDataUrl(raster.dataUrl);
       setWalls([]);
       setOpenings([]);
       setRooms([]);
       setRoomNames({});
       setCalibration([]);
+      setCalibrationEvidence([]);
+      setCalibrationSpreadPct(null);
       setMetersPerPixel(null);
-      setMessage("تم رفع المخطط. عاير القياس أولاً للحصول على أبعاد حقيقية.");
-    };
-    img.src = url;
+      setMessage(raster.sourceType === "pdf"
+        ? "تم تحميل الصفحة الأولى من PDF. عاير بعدًا معروفًا ثم شغّل التحليل."
+        : "تم رفع المخطط. عاير القياس أولاً للحصول على أبعاد حقيقية.");
+    } catch {
+      setMessage("تعذر قراءة الملف. استخدم صورة واضحة أو PDF صالح.");
+    }
   };
 
   const eventPoint = (e: React.MouseEvent<SVGSVGElement>): Point => {
@@ -144,9 +146,17 @@ function App() {
       if (next.length === 2) {
         const px = dist(next[0], next[1]);
         if (px > 0 && knownMeters > 0) {
-          const mpp = knownMeters / px;
-          setMetersPerPixel(mpp);
-          setMessage(`تمت المعايرة: ${(mpp * 1000).toFixed(2)} مم لكل بكسل.`);
+          const evidence = createEvidence(next[0], next[1], knownMeters);
+          const nextEvidence = [...calibrationEvidence, evidence].slice(-6);
+          const robust = robustScale(nextEvidence);
+          setCalibrationEvidence(nextEvidence);
+          setMetersPerPixel(robust.metersPerPixel);
+          setCalibrationSpreadPct(robust.spreadPct);
+          setMessage(
+            robust.count > 1
+              ? `تمت المعايرة من ${robust.count} قياسات: ${((robust.metersPerPixel || 0) * 1000).toFixed(2)} مم/بكسل، اختلاف ${(robust.spreadPct || 0).toFixed(1)}٪.`
+              : `تمت المعايرة: ${((robust.metersPerPixel || 0) * 1000).toFixed(2)} مم لكل بكسل. أضف قياسًا ثانيًا لزيادة الثقة.`
+          );
         }
       }
       return;
@@ -183,7 +193,8 @@ function App() {
       const remote = await analyzeWithRemote(imageUrl);
       if (remote && remote.walls.length) {
         const canonical = canonicalizeAndInferOpenings(remote.walls, metersPerPixel);
-        setWalls(canonical.walls);
+        const snappedWalls = snapOrthogonalIntersections(canonical.walls, metersPerPixel);
+        setWalls(snappedWalls);
         setOpenings(canonical.openings);
         setMessage(`المحلل السحابي اقترح ${canonical.walls.length} جدارًا و${canonical.openings.length} فتحة محتملة. راجع الهندسة قبل الاعتماد.`);
         return;
@@ -309,7 +320,8 @@ function App() {
     }
 
     const canonical = canonicalizeAndInferOpenings(merged, metersPerPixel);
-    setWalls(canonical.walls);
+    const snappedWalls = snapOrthogonalIntersections(canonical.walls, metersPerPixel);
+    setWalls(snappedWalls);
     setOpenings(canonical.openings);
     setMessage(`تم توحيد ${canonical.walls.length} جدارًا واكتشاف ${canonical.openings.length} فتحة محتملة. راجع النتيجة قبل اعتماد 3D.`);
   };
@@ -321,6 +333,41 @@ function App() {
 
   const removeOpening = (id: string) => setOpenings((v) => v.filter((o) => o.id !== id));
 
+  const selectedWall = walls.find((wall) => wall.id === selectedWallId) || null;
+  const selectedOpening = openings.find((opening) => opening.id === selectedOpeningId) || null;
+
+  const setSelectedWallLengthM = (lengthM: number) => {
+    if (!selectedWall || !metersPerPixel || lengthM <= 0) return;
+    const currentPx = dist(selectedWall.a, selectedWall.b);
+    if (currentPx <= 0) return;
+    const targetPx = lengthM / metersPerPixel;
+    const ux = (selectedWall.b.x - selectedWall.a.x) / currentPx;
+    const uy = (selectedWall.b.y - selectedWall.a.y) / currentPx;
+    setWalls((items) => items.map((wall) =>
+      wall.id === selectedWall.id
+        ? { ...wall, b: { x: wall.a.x + ux * targetPx, y: wall.a.y + uy * targetPx } }
+        : wall
+    ));
+  };
+
+  const setSelectedWallThicknessM = (thicknessM: number) => {
+    if (!selectedWall || !metersPerPixel || thicknessM <= 0) return;
+    setWalls((items) => items.map((wall) =>
+      wall.id === selectedWall.id
+        ? { ...wall, thickness: thicknessM / metersPerPixel }
+        : wall
+    ));
+  };
+
+  const updateSelectedOpening = (patch: Partial<Opening>) => {
+    if (!selectedOpening) return;
+    setOpenings((items) => items.map((opening) =>
+      opening.id === selectedOpening.id
+        ? { ...opening, ...patch }
+        : opening
+    ));
+  };
+
   const roomKey = (room: Room) => `${Math.round(room.centroid.x / 10)}:${Math.round(room.centroid.y / 10)}`;
   const renameRoom = (room: Room, name: string) => {
     const key = roomKey(room);
@@ -329,14 +376,14 @@ function App() {
 
   function createSnapshot(includeImage = true): ProjectSnapshot {
     return {
-      version: 3,
+      version: 4,
       units: scaleReady ? "meter" : "pixel",
       image: {
         width: imageSize.w,
         height: imageSize.h,
         ...(includeImage && imageDataUrl ? { dataUrl: imageDataUrl } : {}),
       },
-      calibration: { knownMeters, metersPerPixel },
+      calibration: { knownMeters, metersPerPixel, evidence: calibrationEvidence, spreadPct: calibrationSpreadPct },
       building: { wallHeight, wallThicknessM, style, ceilingVisible, roofVisible, siteWallVisible },
       walls,
       openings,
@@ -361,6 +408,8 @@ function App() {
     }
     setKnownMeters(snapshot.calibration.knownMeters);
     setMetersPerPixel(snapshot.calibration.metersPerPixel);
+    setCalibrationEvidence(snapshot.calibration.evidence || []);
+    setCalibrationSpreadPct(snapshot.calibration.spreadPct ?? null);
     setWallHeight(snapshot.building.wallHeight);
     setWallThicknessM(snapshot.building.wallThicknessM);
     setStyle(snapshot.building.style);
@@ -379,7 +428,7 @@ function App() {
     if (!file) return;
     try {
       const snapshot = JSON.parse(await file.text()) as ProjectSnapshot;
-      if (!snapshot || snapshot.version !== 3 || !Array.isArray(snapshot.walls)) throw new Error("invalid");
+      if (!snapshot || ![3,4].includes(Number(snapshot.version)) || !Array.isArray(snapshot.walls)) throw new Error("invalid");
       loadSnapshot(snapshot);
     } catch {
       setMessage("ملف المشروع غير صالح أو من إصدار غير مدعوم.");
@@ -404,7 +453,7 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div>
-          <div className="brand">منزل H <span>ENGINE V2</span></div>
+          <div className="brand">منزل H <span>ENGINE V3</span></div>
           <div className="subtitle">هندسة قابلة للمراجعة • غرف تلقائية • فتحات حقيقية • هوية سعودية</div>
         </div>
         <div className="view-switch">
@@ -417,8 +466,10 @@ function App() {
       </header>
 
       <section className="toolbar">
-        <label className="upload">رفع المخطط<input type="file" accept="image/*" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
+        <label className="upload">رفع المخطط<input type="file" accept="image/*,application/pdf,.pdf" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
         <button className={tool === "calibrate" ? "active" : ""} onClick={() => { setTool("calibrate"); setCalibration([]); }}>معايرة</button>
+        <button onClick={() => { setCalibration([]); setCalibrationEvidence([]); setCalibrationSpreadPct(null); setMetersPerPixel(null); }}>إعادة المعايرة</button>
+        <button className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>تحديد</button>
         <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
         <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>باب</button>
         <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>نافذة</button>
@@ -457,14 +508,25 @@ function App() {
                   </g>
                 ))}
                 {walls.map((w) => (
-                  <line
-                    key={w.id}
-                    x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y}
-                    strokeWidth={Math.max(4, w.thickness)}
-                    strokeLinecap="square"
-                    className={exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"}
-                    onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); }}
-                  />
+                  <g key={w.id}>
+                    <line
+                      x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y}
+                      strokeWidth={Math.max(4, w.thickness)}
+                      strokeLinecap="square"
+                      className={`${exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"} ${selectedWallId === w.id ? "selected-wall" : ""}`}
+                      onClick={(e) => { if (tool === "select") { e.stopPropagation(); setSelectedWallId(w.id); } }}
+                      onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); setSelectedWallId(null); }}
+                    />
+                    {scaleReady && dist(w.a, w.b) * metersPerPixel! >= 1 && (
+                      <text
+                        className="wall-dimension"
+                        x={(w.a.x + w.b.x) / 2}
+                        y={(w.a.y + w.b.y) / 2 - 10}
+                      >
+                        {(dist(w.a, w.b) * metersPerPixel!).toFixed(2)} م
+                      </text>
+                    )}
+                  </g>
                 ))}
                 {openings.map((o) => {
                   const w = walls.find((x) => x.id === o.wallId);
@@ -476,9 +538,23 @@ function App() {
                   const p2 = pointOnWall(w, Math.min(1, o.centerT + dt / 2));
                   const mid = pointOnWall(w, o.centerT);
                   return (
-                    <g key={o.id} onDoubleClick={(e) => { e.stopPropagation(); removeOpening(o.id); }}>
+                    <g
+                      key={o.id}
+                      onClick={(e) => {
+                        if (tool === "select") {
+                          e.stopPropagation();
+                          setSelectedOpeningId(o.id);
+                          setSelectedWallId(null);
+                        }
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        removeOpening(o.id);
+                        setSelectedOpeningId(null);
+                      }}
+                    >
                       <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} className="opening-cut" strokeWidth={Math.max(7, w.thickness + 5)} />
-                      <circle cx={mid.x} cy={mid.y} r={o.kind === "door" ? 10 : 8} className={o.kind === "door" ? "door-mark" : "window-mark"} />
+                      <circle cx={mid.x} cy={mid.y} r={o.kind === "door" ? 10 : 8} className={`${o.kind === "door" ? "door-mark" : "window-mark"} ${selectedOpeningId === o.id ? "selected-opening" : ""}`} />
                     </g>
                   );
                 })}
@@ -531,6 +607,78 @@ function App() {
           </label>
         </div>
 
+        {selectedWall && scaleReady && (
+          <div className="precision-editor">
+            <strong>تحرير الجدار بدقة</strong>
+            <label>الطول الحقيقي (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0.05"
+                value={(dist(selectedWall.a, selectedWall.b) * metersPerPixel!).toFixed(3)}
+                onChange={(e) => setSelectedWallLengthM(Number(e.target.value))}
+              />
+            </label>
+            <label>السماكة (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0.05"
+                value={(selectedWall.thickness * metersPerPixel!).toFixed(3)}
+                onChange={(e) => setSelectedWallThicknessM(Number(e.target.value))}
+              />
+            </label>
+            <button onClick={() => setSelectedWallId(null)}>إنهاء التحديد</button>
+          </div>
+        )}
+
+        {selectedOpening && (
+          <div className="precision-editor opening-editor">
+            <strong>تحرير الفتحة بدقة</strong>
+            <label>النوع
+              <select
+                value={selectedOpening.kind}
+                onChange={(e) => updateSelectedOpening({
+                  kind: e.target.value as Opening["kind"],
+                  sillM: e.target.value === "door" ? 0 : Math.max(0.6, selectedOpening.sillM),
+                })}
+              >
+                <option value="door">باب</option>
+                <option value="window">نافذة</option>
+              </select>
+            </label>
+            <label>العرض (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0.2"
+                value={selectedOpening.widthM}
+                onChange={(e) => updateSelectedOpening({ widthM: Math.max(0.2, Number(e.target.value)) })}
+              />
+            </label>
+            <label>الارتفاع (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0.2"
+                value={selectedOpening.heightM}
+                onChange={(e) => updateSelectedOpening({ heightM: Math.max(0.2, Number(e.target.value)) })}
+              />
+            </label>
+            <label>ارتفاع الجلسة (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0"
+                value={selectedOpening.sillM}
+                disabled={selectedOpening.kind === "door"}
+                onChange={(e) => updateSelectedOpening({ sillM: Math.max(0, Number(e.target.value)) })}
+              />
+            </label>
+            <button onClick={() => setSelectedOpeningId(null)}>إنهاء التحديد</button>
+          </div>
+        )}
+
         <div className="toggle-row">
           <label><input type="checkbox" checked={roofVisible} onChange={(e) => setRoofVisible(e.target.checked)} /> سقف</label>
           <label><input type="checkbox" checked={ceilingVisible} onChange={(e) => setCeilingVisible(e.target.checked)} /> سقف داخلي</label>
@@ -545,6 +693,8 @@ function App() {
           <span><b>{rooms.length}</b> مساحة مغلقة</span>
           <span><b>{totalRoomArea ? `${totalRoomArea.toFixed(1)} م²` : "—"}</b> مساحة داخلية</span>
           <span><b>{scaleReady ? `${(metersPerPixel! * 1000).toFixed(2)} مم/px` : "غير معاير"}</b> مقياس</span>
+          <span><b>{calibrationEvidence.length}</b> قياسات معايرة</span>
+          <span><b>{calibrationSpreadPct == null ? "—" : `${calibrationSpreadPct.toFixed(1)}٪`}</b> اختلاف المعايرة</span>
           <span><b>{totalWallLength ? `${totalWallLength.toFixed(1)} م` : "—"}</b> أطوال الجدران</span>
         </div>
 

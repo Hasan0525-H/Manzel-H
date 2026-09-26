@@ -362,3 +362,65 @@ export function canonicalizeAndInferOpenings(
 
   return { walls: canonical, openings: inferred };
 }
+
+
+export function snapOrthogonalIntersections(
+  walls: Wall[],
+  metersPerPixel: number | null,
+): Wall[] {
+  if (!walls.length) return walls;
+  const tolerance = metersPerPixel && metersPerPixel > 0
+    ? Math.max(6, Math.min(24, 0.22 / metersPerPixel))
+    : 14;
+
+  const horizontal = walls.filter((w) => Math.abs(w.a.y - w.b.y) <= Math.abs(w.a.x - w.b.x));
+  const vertical = walls.filter((w) => Math.abs(w.a.y - w.b.y) > Math.abs(w.a.x - w.b.x));
+  const next = walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
+  const byId = new Map(next.map((w) => [w.id, w]));
+
+  for (const h of horizontal) {
+    const targetH = byId.get(h.id)!;
+    const hy = (h.a.y + h.b.y) / 2;
+    let hx1 = Math.min(h.a.x, h.b.x);
+    let hx2 = Math.max(h.a.x, h.b.x);
+
+    for (const v of vertical) {
+      const vx = (v.a.x + v.b.x) / 2;
+      const vy1 = Math.min(v.a.y, v.b.y);
+      const vy2 = Math.max(v.a.y, v.b.y);
+      const horizontalNear = vx >= hx1 - tolerance && vx <= hx2 + tolerance;
+      const verticalNear = hy >= vy1 - tolerance && hy <= vy2 + tolerance;
+      if (!horizontalNear || !verticalNear) continue;
+
+      const targetV = byId.get(v.id)!;
+      const hLeftIsA = targetH.a.x <= targetH.b.x;
+      const vTopIsA = targetV.a.y <= targetV.b.y;
+
+      if (Math.abs(vx - hx1) <= tolerance) {
+        if (hLeftIsA) targetH.a.x = vx;
+        else targetH.b.x = vx;
+        hx1 = vx;
+      }
+      if (Math.abs(vx - hx2) <= tolerance) {
+        if (hLeftIsA) targetH.b.x = vx;
+        else targetH.a.x = vx;
+        hx2 = vx;
+      }
+      if (Math.abs(hy - vy1) <= tolerance) {
+        if (vTopIsA) targetV.a.y = hy;
+        else targetV.b.y = hy;
+      }
+      if (Math.abs(hy - vy2) <= tolerance) {
+        if (vTopIsA) targetV.b.y = hy;
+        else targetV.a.y = hy;
+      }
+
+      targetH.a.y = hy;
+      targetH.b.y = hy;
+      targetV.a.x = vx;
+      targetV.b.x = vx;
+    }
+  }
+
+  return next;
+}
