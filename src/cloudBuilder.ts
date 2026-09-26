@@ -62,7 +62,7 @@ export async function renderPlanInCloud(
   const configured = import.meta.env.VITE_HOUSE_BUILDER_URL?.trim();
   const base = configured || CLOUD_HOUSE_URL;
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 240000);
+  const timer = window.setTimeout(() => controller.abort(), 900000);
 
   const body = new FormData();
   body.append("file", file, file.name || "floorplan");
