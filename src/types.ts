@@ -47,7 +47,7 @@ export type Reconstruction = {
 };
 
 export type ProjectSnapshot = {
-  version: 3;
+  version: 3 | 4;
   units: "meter" | "pixel";
   image: { width: number; height: number; dataUrl?: string };
   calibration: { knownMeters: number; metersPerPixel: number | null; evidence?: CalibrationEvidence[]; spreadPct?: number | null };
