@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from pydantic import BaseModel, Field
 from house_builder import build_house_glb
-from render_images import render_interior, render_exterior
+from render_images_v2 import render_interior, render_exterior
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Yytsi/floorplan-to-3d-walls")
 DEVICE_NAME = os.getenv("DEVICE", "auto")
