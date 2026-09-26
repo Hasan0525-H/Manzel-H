@@ -261,11 +261,15 @@ def _direct_plan_prompt(kind: str, options: dict[str, Any]) -> str:
 
     base = f"""
 Image 0 is the original user architectural floor plan and is the authoritative geometry.
-Image 1 is only a high-contrast copy of the same plan to make walls easier to read.
+Image 1 is a high-contrast copy of the exact same plan.
+Image 2 is an edge map of the exact same plan.
+Image 3 is a thick structural-line mask of the exact same plan.
+All four references describe one identical geometry. Cross-check them before rendering.
 Preserve the exact outer footprint, all visible wall positions, room adjacency,
 corridors, stairs, doors, windows, voids, columns, proportions and orientation.
-Do not simplify, merge, move, remove, or invent rooms or structural walls.
+Do not simplify, merge, move, remove, rotate, mirror, stretch or invent rooms or structural walls.
 Do not reinterpret the plan into a different house.
+If any decorative goal conflicts with the plan geometry, the plan geometry always wins.
 Floor count: {floors}. Architectural style: {style}.
 Premium photorealistic Saudi residential archviz, physically plausible materials,
 realistic scale, natural lighting, professional architectural photography,
