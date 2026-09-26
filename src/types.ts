@@ -1,4 +1,4 @@
-export type Point = { x: number; y: number };
+export type Point = { x: number; y: number };\n\nexport type CalibrationEvidence = {\n  id: string;\n  a: Point;\n  b: Point;\n  meters: number;\n};
 
 export type Wall = {
   id: string;
@@ -43,7 +43,7 @@ export type ProjectSnapshot = {
   version: 3;
   units: "meter" | "pixel";
   image: { width: number; height: number; dataUrl?: string };
-  calibration: { knownMeters: number; metersPerPixel: number | null };
+  calibration: { knownMeters: number; metersPerPixel: number | null; evidence?: CalibrationEvidence[]; spreadPct?: number | null };
   building: {
     wallHeight: number;
     wallThicknessM: number;
