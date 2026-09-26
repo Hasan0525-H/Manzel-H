@@ -65,6 +65,32 @@ def add(scene: trimesh.Scene, name: str, mesh: trimesh.Trimesh):
     scene.add_geometry(mesh, node_name=name, geom_name=name)
 
 
+
+def merge_scene_by_material(scene: trimesh.Scene) -> trimesh.Scene:
+    buckets: dict[str, list[trimesh.Trimesh]] = {}
+    materials: dict[str, Any] = {}
+
+    for geometry in scene.geometry.values():
+        if not isinstance(geometry, trimesh.Trimesh):
+            continue
+        mat = getattr(getattr(geometry, "visual", None), "material", None)
+        name = getattr(mat, "name", None) or "default"
+        buckets.setdefault(name, []).append(geometry)
+        if name not in materials:
+            materials[name] = mat
+
+    merged_scene = trimesh.Scene()
+    for name, meshes in buckets.items():
+        if not meshes:
+            continue
+        merged = trimesh.util.concatenate(meshes)
+        mat = materials.get(name)
+        if mat is not None:
+            merged.visual = TextureVisuals(material=mat)
+        merged_scene.add_geometry(merged, node_name=name, geom_name=name)
+
+    return merged_scene
+
 def point_on_wall(wall: dict[str, Any], t: float, scale: float, cx: float, cy: float):
     ax = float(wall["a"]["x"]) * scale - cx
     az = float(wall["a"]["y"]) * scale - cy
@@ -255,4 +281,5 @@ def build_house_glb(payload: dict[str, Any]) -> bytes:
     gate_z = house_cz + site_d / 2 - 0.04
     add(scene, "vehicle_gate", box_mesh([3.8, 1.55, 0.09], [house_cx + house_w * 0.30, 0.78, gate_z], 0, mats["accent"]))
 
-    return scene.export(file_type="glb")
+    optimized = merge_scene_by_material(scene)
+    return optimized.export(file_type="glb")
