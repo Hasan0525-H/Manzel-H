@@ -135,6 +135,7 @@ export default function App() {
         wallHeight,
         wallThicknessM,
         style: nextStyle,
+        exteriorWallIds,
       });
       if (cloudModelUrl) URL.revokeObjectURL(cloudModelUrl);
       setCloudModelUrl(url);
