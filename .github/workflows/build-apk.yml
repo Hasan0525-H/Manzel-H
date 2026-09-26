@@ -3,7 +3,8 @@ name: build-apk
 on:
   push:
     branches:
-      - "feat/android-apk"
+      - "main"
+      - "feat/mobile-redesign-v8"
   workflow_dispatch:
 
 jobs:
@@ -24,29 +25,28 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Test web app
+      - name: Test
         run: npm test
 
-      - name: Build web app
+      - name: Build web
         run: npm run build
 
-      - name: Add Android platform
+      - name: Add Android
         run: npx cap add android
 
-      - name: Sync Android project
+      - name: Sync Android
         run: npx cap sync android
 
-      - name: Build debug APK
+      - name: Build APK
         run: |
           chmod +x android/gradlew
           cd android
           ./gradlew assembleDebug
 
-      - name: Rename APK
+      - name: Package APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk Manzel-H.apk
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: Manzel-H-APK
           path: Manzel-H.apk
