@@ -7,20 +7,11 @@ import threading
 
 import cv2
 import numpy as np
-import segmentation_models_pytorch as smp
-import torch
-import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
-from huggingface_hub import hf_hub_download, list_repo_files
 from PIL import Image
 from pydantic import BaseModel
 from house_builder import build_house_glb
-
-try:
-    from safetensors.torch import load_file as load_safetensors
-except Exception:
-    load_safetensors = None
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Yytsi/floorplan-to-3d-walls")
 DEVICE_NAME = os.getenv("DEVICE", "auto")
@@ -29,7 +20,8 @@ IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
-def choose_device() -> torch.device:
+def choose_device():
+    import torch
     if DEVICE_NAME != "auto":
         return torch.device(DEVICE_NAME)
     if torch.cuda.is_available():
@@ -49,10 +41,10 @@ def pick_repo_file(files: list[str], candidates: list[str]) -> str:
     raise RuntimeError(f"required model file not found in {MODEL_REPO}: {candidates}")
 
 
-def load_checkpoint(path: str, device: torch.device):
+def load_checkpoint(path: str, device):
+    import torch
     if path.endswith(".safetensors"):
-        if load_safetensors is None:
-            raise RuntimeError("safetensors loader is unavailable")
+        from safetensors.torch import load_file as load_safetensors
         state = load_safetensors(path, device=str(device))
     else:
         checkpoint = torch.load(path, map_location=device, weights_only=False)
@@ -72,6 +64,10 @@ def load_checkpoint(path: str, device: torch.device):
 
 
 def build_model():
+    import segmentation_models_pytorch as smp
+    import yaml
+    from huggingface_hub import hf_hub_download, list_repo_files
+
     files = list_repo_files(MODEL_REPO)
     config_name = pick_repo_file(files, ["config.yaml", "config.yml"])
     weights_name = pick_repo_file(
@@ -160,6 +156,7 @@ def letterbox(image: np.ndarray, out_h: int, out_w: int):
 
 
 def infer_mask(image_rgb: np.ndarray):
+    import torch
     ensure_model()
     out_h, out_w = app.state.image_size
     canvas, scale, left, top, inner_w, inner_h = letterbox(image_rgb, out_h, out_w)
