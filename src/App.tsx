@@ -3,19 +3,18 @@ import * as THREE from "three";
 
 type Point = { x: number; y: number };
 type Wall = { id: string; a: Point; b: Point; thickness: number };
-type OpeningKind = "door" | "window";
 type Opening = {
   id: string;
   wallId: string;
-  kind: OpeningKind;
-  t: number;
+  kind: "door" | "window";
+  centerT: number;
   widthM: number;
   heightM: number;
   sillM: number;
 };
 type Tool = "select" | "calibrate" | "wall" | "door" | "window";
 
-const uid = () => Math.random().toString(36).slice(2, 9);
+const uid = () => Math.random().toString(36).slice(2, 10);
 
 function dist(a: Point, b: Point) {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -25,27 +24,17 @@ function snapPoint(p: Point, step = 5): Point {
   return { x: Math.round(p.x / step) * step, y: Math.round(p.y / step) * step };
 }
 
-function nearestWallPoint(p: Point, walls: Wall[]) {
-  let best: { wall: Wall; t: number; point: Point; d: number } | null = null;
-  for (const wall of walls) {
-    const vx = wall.b.x - wall.a.x;
-    const vy = wall.b.y - wall.a.y;
-    const len2 = vx * vx + vy * vy;
-    if (!len2) continue;
-    const rawT = ((p.x - wall.a.x) * vx + (p.y - wall.a.y) * vy) / len2;
-    const t = Math.max(0, Math.min(1, rawT));
-    const point = { x: wall.a.x + vx * t, y: wall.a.y + vy * t };
-    const d = dist(p, point);
-    if (!best || d < best.d) best = { wall, t, point, d };
-  }
-  return best;
+function projectToSegment(p: Point, a: Point, b: Point) {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const len2 = vx * vx + vy * vy || 1;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2));
+  const q = { x: a.x + vx * t, y: a.y + vy * t };
+  return { t, q, distance: dist(p, q) };
 }
 
-function openingPoint(opening: Opening, wall: Wall): Point {
-  return {
-    x: wall.a.x + (wall.b.x - wall.a.x) * opening.t,
-    y: wall.a.y + (wall.b.y - wall.a.y) * opening.t,
-  };
+function pointOnWall(w: Wall, t: number): Point {
+  return { x: w.a.x + (w.b.x - w.a.x) * t, y: w.a.y + (w.b.y - w.a.y) * t };
 }
 
 function App() {
@@ -65,12 +54,12 @@ function App() {
   const [message, setMessage] = useState("ارفع المخطط، ثم عاير القياس من بُعد معروف.");
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  const scaleReady = metersPerPixel !== null && metersPerPixel > 0;
+  const scaleReady = !!metersPerPixel && metersPerPixel > 0;
 
-  const floorAreaEstimate = useMemo(() => {
-    if (!scaleReady || !imageSize.w || !imageSize.h) return null;
-    return imageSize.w * metersPerPixel! * imageSize.h * metersPerPixel!;
-  }, [scaleReady, imageSize, metersPerPixel]);
+  const totalWallLength = useMemo(() => {
+    if (!scaleReady) return null;
+    return walls.reduce((sum, w) => sum + dist(w.a, w.b) * metersPerPixel!, 0);
+  }, [walls, metersPerPixel, scaleReady]);
 
   const onUpload = (file?: File) => {
     if (!file) return;
@@ -83,7 +72,7 @@ function App() {
       setOpenings([]);
       setCalibration([]);
       setMetersPerPixel(null);
-      setMessage("تم رفع المخطط. عاير بُعدًا معروفًا ثم استخرج الجدران.");
+      setMessage("تم رفع المخطط. عاير القياس أولاً للحصول على أبعاد حقيقية.");
     };
     img.src = url;
   };
@@ -97,23 +86,38 @@ function App() {
     });
   };
 
-  const addOpening = (kind: OpeningKind, p: Point) => {
-    if (!scaleReady) {
-      setMessage("عاير المقياس أولاً حتى يكون عرض الباب أو النافذة حقيقيًا.");
+  const addOpeningAt = (p: Point, kind: "door" | "window") => {
+    if (!scaleReady || walls.length === 0) {
+      setMessage("عاير القياس وارسم/اكتشف الجدران قبل إضافة الفتحات.");
       return;
     }
-    const nearest = nearestWallPoint(p, walls);
-    if (!nearest) return;
-    const maxPxDistance = Math.max(30, 0.45 / metersPerPixel!);
-    if (nearest.d > maxPxDistance) {
-      setMessage("اضغط قريبًا من الجدار المطلوب.");
+    const candidates = walls
+      .map((wall) => ({ wall, ...projectToSegment(p, wall.a, wall.b) }))
+      .sort((a, b) => a.distance - b.distance);
+    const best = candidates[0];
+    const hitTolerancePx = Math.max(22, 0.35 / metersPerPixel!);
+    if (!best || best.distance > hitTolerancePx) {
+      setMessage("اضغط قريبًا من الجدار لإضافة الفتحة.");
       return;
     }
-    const opening: Opening = kind === "door"
-      ? { id: uid(), wallId: nearest.wall.id, kind, t: nearest.t, widthM: 0.95, heightM: 2.2, sillM: 0 }
-      : { id: uid(), wallId: nearest.wall.id, kind, t: nearest.t, widthM: 1.4, heightM: 1.3, sillM: 0.9 };
-    setOpenings((v) => [...v, opening]);
-    setMessage(kind === "door" ? "تمت إضافة باب 95 سم. انقر مزدوجًا على رمزه لحذفه." : "تمت إضافة نافذة 140 سم.");
+
+    const wallLengthM = dist(best.wall.a, best.wall.b) * metersPerPixel!;
+    const widthM = kind === "door" ? 0.95 : 1.4;
+    const marginT = Math.min(0.2, (widthM / 2 + 0.15) / Math.max(wallLengthM, 0.1));
+    const centerT = Math.max(marginT, Math.min(1 - marginT, best.t));
+    setOpenings((v) => [
+      ...v,
+      {
+        id: uid(),
+        wallId: best.wall.id,
+        kind,
+        centerT,
+        widthM,
+        heightM: kind === "door" ? 2.2 : 1.35,
+        sillM: kind === "door" ? 0 : 0.9,
+      },
+    ]);
+    setMessage(kind === "door" ? "تمت إضافة باب على الجدار." : "تمت إضافة نافذة على الجدار.");
   };
 
   const onCanvasClick = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -126,21 +130,23 @@ function App() {
       if (next.length === 2) {
         const px = dist(next[0], next[1]);
         if (px > 0 && knownMeters > 0) {
-          setMetersPerPixel(knownMeters / px);
-          setMessage(`تمت المعايرة: ${(knownMeters / px * 1000).toFixed(2)} مم/بكسل.`);
+          const mpp = knownMeters / px;
+          setMetersPerPixel(mpp);
+          setMessage(`تمت المعايرة: ${(mpp * 1000).toFixed(2)} مم لكل بكسل.`);
         }
       }
       return;
     }
 
     if (tool === "door" || tool === "window") {
-      addOpening(tool, p);
+      addOpeningAt(p, tool);
       return;
     }
 
     if (tool === "wall") {
       if (!draftStart) {
         setDraftStart(p);
+        setMessage("حدد نقطة نهاية الجدار.");
         return;
       }
       const dx = Math.abs(p.x - draftStart.x);
@@ -149,6 +155,7 @@ function App() {
       if (dist(draftStart, end) > 8) {
         const thicknessPx = scaleReady ? wallThicknessM / metersPerPixel! : 12;
         setWalls((v) => [...v, { id: uid(), a: draftStart, b: end, thickness: thicknessPx }]);
+        setMessage("تمت إضافة الجدار.");
       }
       setDraftStart(null);
     }
@@ -161,66 +168,110 @@ function App() {
     img.src = imageUrl;
     await img.decode();
 
-    const maxW = 900;
-    const downScale = Math.min(1, maxW / img.naturalWidth);
-    const w = Math.round(img.naturalWidth * downScale);
-    const h = Math.round(img.naturalHeight * downScale);
+    const maxW = 1000;
+    const sc = Math.min(1, maxW / img.naturalWidth);
+    const w = Math.round(img.naturalWidth * sc);
+    const h = Math.round(img.naturalHeight * sc);
     const c = document.createElement("canvas");
     c.width = w;
     c.height = h;
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, 0, 0, w, h);
-    const data = ctx.getImageData(0, 0, w, h).data;
+    const pixels = ctx.getImageData(0, 0, w, h).data;
 
     const isWallPixel = (x: number, y: number) => {
       const i = (y * w + x) * 4;
-      const r = data[i], g = data[i + 1], b = data[i + 2];
-      const blueWall = b > 105 && b > r * 1.14 && b > g * 1.03;
-      const darkInk = r + g + b < 210;
-      return blueWall || darkInk;
+      const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+      const blue = b > 115 && b > r * 1.18 && b > g * 1.04;
+      const dark = r + g + b < 200;
+      return blue || dark;
     };
 
-    const candidates: Wall[] = [];
-    const minRun = Math.max(45, Math.floor(w * 0.055));
-    const rowStep = Math.max(3, Math.round(h / 190));
-    const colStep = Math.max(3, Math.round(w / 190));
+    const scoreRow = (y: number) => {
+      let count = 0;
+      for (let x = 0; x < w; x += 2) if (isWallPixel(x, y)) count++;
+      return count;
+    };
+    const scoreCol = (x: number) => {
+      let count = 0;
+      for (let y = 0; y < h; y += 2) if (isWallPixel(x, y)) count++;
+      return count;
+    };
 
-    for (let y = 0; y < h; y += rowStep) {
+    const rowScores = Array.from({ length: h }, (_, y) => scoreRow(y));
+    const colScores = Array.from({ length: w }, (_, x) => scoreCol(x));
+    const rowThreshold = Math.max(8, Math.floor(w * 0.035));
+    const colThreshold = Math.max(8, Math.floor(h * 0.035));
+
+    const pickPeaks = (scores: number[], threshold: number) => {
+      const out: number[] = [];
       let start = -1;
+      for (let i = 0; i <= scores.length; i++) {
+        const on = i < scores.length && scores[i] >= threshold;
+        if (on && start < 0) start = i;
+        if ((!on || i === scores.length) && start >= 0) {
+          const end = i - 1;
+          let best = start;
+          for (let j = start + 1; j <= end; j++) if (scores[j] > scores[best]) best = j;
+          out.push(best);
+          start = -1;
+        }
+      }
+      return out;
+    };
+
+    const rows = pickPeaks(rowScores, rowThreshold);
+    const cols = pickPeaks(colScores, colThreshold);
+    const candidates: Wall[] = [];
+    const k = 1 / sc;
+    const minRun = Math.max(35, Math.floor(Math.min(w, h) * 0.055));
+
+    for (const y of rows) {
+      let start = -1, misses = 0;
       for (let x = 0; x <= w; x++) {
         const on = x < w && isWallPixel(x, y);
-        if (on && start < 0) start = x;
-        if ((!on || x === w) && start >= 0) {
-          if (x - start >= minRun) {
-            const k = 1 / downScale;
-            candidates.push({
-              id: uid(),
-              a: { x: start * k, y: y * k },
-              b: { x: (x - 1) * k, y: y * k },
-              thickness: scaleReady ? wallThicknessM / metersPerPixel! : 12,
-            });
+        if (on) {
+          if (start < 0) start = x;
+          misses = 0;
+        } else if (start >= 0) {
+          misses++;
+          if (misses > 5 || x === w) {
+            const end = x - misses;
+            if (end - start >= minRun) {
+              candidates.push({
+                id: uid(),
+                a: { x: start * k, y: y * k },
+                b: { x: end * k, y: y * k },
+                thickness: scaleReady ? wallThicknessM / metersPerPixel! : 12,
+              });
+            }
+            start = -1; misses = 0;
           }
-          start = -1;
         }
       }
     }
 
-    for (let x = 0; x < w; x += colStep) {
-      let start = -1;
+    for (const x of cols) {
+      let start = -1, misses = 0;
       for (let y = 0; y <= h; y++) {
         const on = y < h && isWallPixel(x, y);
-        if (on && start < 0) start = y;
-        if ((!on || y === h) && start >= 0) {
-          if (y - start >= minRun) {
-            const k = 1 / downScale;
-            candidates.push({
-              id: uid(),
-              a: { x: x * k, y: start * k },
-              b: { x: x * k, y: (y - 1) * k },
-              thickness: scaleReady ? wallThicknessM / metersPerPixel! : 12,
-            });
+        if (on) {
+          if (start < 0) start = y;
+          misses = 0;
+        } else if (start >= 0) {
+          misses++;
+          if (misses > 5 || y === h) {
+            const end = y - misses;
+            if (end - start >= minRun) {
+              candidates.push({
+                id: uid(),
+                a: { x: x * k, y: start * k },
+                b: { x: x * k, y: end * k },
+                thickness: scaleReady ? wallThicknessM / metersPerPixel! : 12,
+              });
+            }
+            start = -1; misses = 0;
           }
-          start = -1;
         }
       }
     }
@@ -232,25 +283,36 @@ function App() {
         const mh = Math.abs(m.a.y - m.b.y) < 1;
         if (mh !== horizontal) return false;
         if (horizontal) {
-          return Math.abs(m.a.y - wall.a.y) < 16 &&
-            Math.max(m.a.x, wall.a.x) <= Math.min(m.b.x, wall.b.x) + 40;
+          const near = Math.abs(m.a.y - wall.a.y) < 16;
+          const overlap = Math.max(Math.min(m.a.x, m.b.x), Math.min(wall.a.x, wall.b.x)) <=
+            Math.min(Math.max(m.a.x, m.b.x), Math.max(wall.a.x, wall.b.x)) + 28;
+          return near && overlap;
         }
-        return Math.abs(m.a.x - wall.a.x) < 16 &&
-          Math.max(m.a.y, wall.a.y) <= Math.min(m.b.y, wall.b.y) + 40;
+        const near = Math.abs(m.a.x - wall.a.x) < 16;
+        const overlap = Math.max(Math.min(m.a.y, m.b.y), Math.min(wall.a.y, wall.b.y)) <=
+          Math.min(Math.max(m.a.y, m.b.y), Math.max(wall.a.y, wall.b.y)) + 28;
+        return near && overlap;
       });
       if (!duplicate) merged.push(wall);
-      if (merged.length >= 140) break;
+      if (merged.length >= 180) break;
     }
 
     setWalls(merged);
     setOpenings([]);
-    setMessage(`تم اقتراح ${merged.length} جدارًا. الآن راجعها وأضف الأبواب والنوافذ.`);
+    setMessage(`تم اقتراح ${merged.length} جدارًا. راجعها ثم أضف الأبواب والنوافذ.`);
   };
+
+  const removeWall = (id: string) => {
+    setWalls((v) => v.filter((w) => w.id !== id));
+    setOpenings((v) => v.filter((o) => o.wallId !== id));
+  };
+
+  const removeOpening = (id: string) => setOpenings((v) => v.filter((o) => o.id !== id));
 
   const exportJson = () => {
     const payload = {
       version: 2,
-      units: "meter",
+      units: scaleReady ? "meter" : "pixel",
       image: { width: imageSize.w, height: imageSize.h },
       calibration: { knownMeters, metersPerPixel },
       building: { wallHeight, wallThicknessM, style },
@@ -274,8 +336,8 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div>
-          <div className="brand">منزل H <span>LAB</span></div>
-          <div className="subtitle">2D → هندسة دقيقة → منزل سعودي 3D</div>
+          <div className="brand">منزل H <span>ENGINE</span></div>
+          <div className="subtitle">المخطط أولاً • هندسة ثابتة • طراز سعودي فوقها</div>
         </div>
         <div className="view-switch">
           {(["2d", "split", "3d"] as const).map((v) => (
@@ -287,16 +349,13 @@ function App() {
       </header>
 
       <section className="toolbar">
-        <label className="upload">
-          رفع المخطط
-          <input type="file" accept="image/*" onChange={(e) => onUpload(e.target.files?.[0])} />
-        </label>
+        <label className="upload">رفع المخطط<input type="file" accept="image/*" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
         <button className={tool === "calibrate" ? "active" : ""} onClick={() => { setTool("calibrate"); setCalibration([]); }}>معايرة</button>
         <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
-        <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")} disabled={!walls.length}>باب</button>
-        <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")} disabled={!walls.length}>نافذة</button>
+        <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>باب</button>
+        <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>نافذة</button>
         <button onClick={autoTrace} disabled={!imageUrl}>اقتراح الجدران</button>
-        <button onClick={() => { setWalls([]); setOpenings([]); }} disabled={!walls.length}>مسح الهندسة</button>
+        <button onClick={() => { setWalls([]); setOpenings([]); }} disabled={!walls.length}>مسح</button>
         <button onClick={exportJson} disabled={!walls.length}>تصدير JSON</button>
       </section>
 
@@ -309,53 +368,39 @@ function App() {
               <div className="empty">
                 <div className="upload-mark">＋</div>
                 <h2>ارفع صورة المخطط</h2>
-                <p>عاير بُعدًا واحدًا معروفًا، ثم راجع الجدران وأضف الفتحات قبل اعتماد 3D.</p>
+                <p>المعايرة بنقطتين تجعل كل جدار وكل فتحة تُحفظ بوحدة حقيقية.</p>
               </div>
             ) : (
               <svg ref={svgRef} className="plan" viewBox={`0 0 ${imageSize.w} ${imageSize.h}`} onClick={onCanvasClick}>
-                <image href={imageUrl} x="0" y="0" width={imageSize.w} height={imageSize.h} opacity="0.5" />
+                <image href={imageUrl} x="0" y="0" width={imageSize.w} height={imageSize.h} opacity="0.48" />
                 {walls.map((w) => (
                   <line
                     key={w.id}
                     x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y}
-                    stroke="currentColor"
                     strokeWidth={Math.max(4, w.thickness)}
                     strokeLinecap="square"
                     className="wall-line"
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      setWalls((all) => all.filter((x) => x.id !== w.id));
-                      setOpenings((all) => all.filter((o) => o.wallId !== w.id));
-                    }}
+                    onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); }}
                   />
                 ))}
                 {openings.map((o) => {
-                  const wall = walls.find((w) => w.id === o.wallId);
-                  if (!wall || !scaleReady) return null;
-                  const p = openingPoint(o, wall);
-                  const len = dist(wall.a, wall.b);
-                  const ux = (wall.b.x - wall.a.x) / len;
-                  const uy = (wall.b.y - wall.a.y) / len;
-                  const half = (o.widthM / metersPerPixel!) / 2;
+                  const w = walls.find((x) => x.id === o.wallId);
+                  if (!w || !scaleReady) return null;
+                  const lenPx = o.widthM / metersPerPixel!;
+                  const lenWall = dist(w.a, w.b);
+                  const dt = lenPx / Math.max(lenWall, 1);
+                  const p1 = pointOnWall(w, Math.max(0, o.centerT - dt / 2));
+                  const p2 = pointOnWall(w, Math.min(1, o.centerT + dt / 2));
+                  const mid = pointOnWall(w, o.centerT);
                   return (
-                    <line
-                      key={o.id}
-                      x1={p.x - ux * half}
-                      y1={p.y - uy * half}
-                      x2={p.x + ux * half}
-                      y2={p.y + uy * half}
-                      className={o.kind === "door" ? "opening door-opening" : "opening window-opening"}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setOpenings((all) => all.filter((x) => x.id !== o.id));
-                      }}
-                    />
+                    <g key={o.id} onDoubleClick={(e) => { e.stopPropagation(); removeOpening(o.id); }}>
+                      <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} className="opening-cut" strokeWidth={Math.max(7, w.thickness + 5)} />
+                      <circle cx={mid.x} cy={mid.y} r={o.kind === "door" ? 10 : 8} className={o.kind === "door" ? "door-mark" : "window-mark"} />
+                    </g>
                   );
                 })}
                 {calibration.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="10" className="cal-point" />)}
-                {calibration.length === 2 && (
-                  <line x1={calibration[0].x} y1={calibration[0].y} x2={calibration[1].x} y2={calibration[1].y} className="cal-line" />
-                )}
+                {calibration.length === 2 && <line x1={calibration[0].x} y1={calibration[0].y} x2={calibration[1].x} y2={calibration[1].y} className="cal-line" />}
                 {draftStart && <circle cx={draftStart.x} cy={draftStart.y} r="9" className="draft-point" />}
               </svg>
             )}
@@ -402,8 +447,9 @@ function App() {
           <span><b>{openings.filter((o) => o.kind === "door").length}</b> باب</span>
           <span><b>{openings.filter((o) => o.kind === "window").length}</b> نافذة</span>
           <span><b>{scaleReady ? `${(metersPerPixel! * 1000).toFixed(2)} مم/px` : "غير معاير"}</b> مقياس</span>
-          <span><b>{floorAreaEstimate ? `${floorAreaEstimate.toFixed(0)} م²` : "—"}</b> إطار الصورة</span>
+          <span><b>{totalWallLength ? `${totalWallLength.toFixed(1)} م` : "—"}</b> أطوال الجدران</span>
         </div>
+        <div className="help">حذف جدار أو فتحة: نقرتان متتاليتان عليها. الفتحات في 3D تُقص فعليًا من الجدار وليست مجرد رموز.</div>
       </aside>
     </div>
   );
@@ -424,7 +470,7 @@ function ThreePreview(props: {
     if (!mount.current) return;
     const el = mount.current;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf1eee7);
+    scene.background = new THREE.Color(0xf0ede6);
 
     const camera = new THREE.PerspectiveCamera(45, el.clientWidth / Math.max(el.clientHeight, 1), 0.1, 500);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -433,8 +479,8 @@ function ThreePreview(props: {
     renderer.shadowMap.enabled = true;
     el.replaceChildren(renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x8d7c66, 2.2));
-    const sun = new THREE.DirectionalLight(0xffffff, 2.8);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7761, 2.15));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.7);
     sun.position.set(12, 24, 8);
     sun.castShadow = true;
     scene.add(sun);
@@ -445,86 +491,78 @@ function ThreePreview(props: {
     const group = new THREE.Group();
 
     const palette: Record<string, number> = {
-      "سعودي حديث": 0xe9e0d1,
-      "نجدي حديث": 0xc9a778,
-      "حجازي حديث": 0xe9d8bd,
-      "Minimal دافئ": 0xf2eee8,
+      "سعودي حديث": 0xe7dfd2,
+      "نجدي حديث": 0xc7a477,
+      "حجازي حديث": 0xead6b8,
+      "Minimal دافئ": 0xf1ece4,
     };
-    const wallMat = new THREE.MeshStandardMaterial({ color: palette[props.style] ?? 0xe9e0d1, roughness: 0.72 });
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x5b4635, roughness: 0.55 });
-    const glassMat = new THREE.MeshStandardMaterial({ color: 0xa9c7d8, roughness: 0.18, metalness: 0.08, transparent: true, opacity: 0.55 });
+    const wallMat = new THREE.MeshStandardMaterial({ color: palette[props.style] ?? 0xe7dfd2, roughness: 0.72 });
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3b342c, roughness: 0.6 });
 
-    const addBoxOnWall = (
-      wall: Wall,
-      alongStart: number,
-      alongEnd: number,
-      yStart: number,
-      yEnd: number,
-      material: THREE.Material
-    ) => {
-      const ax = wall.a.x * scale - cx;
-      const az = wall.a.y * scale - cy;
-      const bx = wall.b.x * scale - cx;
-      const bz = wall.b.y * scale - cy;
-      const fullLength = Math.hypot(bx - ax, bz - az);
-      if (fullLength < 0.05 || alongEnd <= alongStart || yEnd <= yStart) return;
-      const ux = (bx - ax) / fullLength;
-      const uz = (bz - az) / fullLength;
-      const length = alongEnd - alongStart;
-      const mid = (alongStart + alongEnd) / 2;
-      const thickness = props.metersPerPixel ? Math.max(0.08, wall.thickness * scale) : props.wallThicknessM;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(length, yEnd - yStart, thickness), material);
-      mesh.position.set(ax + ux * mid, (yStart + yEnd) / 2, az + uz * mid);
-      mesh.rotation.y = -Math.atan2(bz - az, bx - ax);
+    const addBox = (length: number, height: number, thickness: number, x: number, y: number, z: number, angle: number, mat = wallMat) => {
+      if (length <= 0.02 || height <= 0.02) return;
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(length, height, thickness), mat);
+      mesh.position.set(x, y, z);
+      mesh.rotation.y = angle;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       group.add(mesh);
     };
 
     for (const wall of props.walls) {
-      const ax = wall.a.x * scale - cx;
-      const az = wall.a.y * scale - cy;
-      const bx = wall.b.x * scale - cx;
-      const bz = wall.b.y * scale - cy;
-      const length = Math.hypot(bx - ax, bz - az);
+      const ax = wall.a.x * scale - cx, az = wall.a.y * scale - cy;
+      const bx = wall.b.x * scale - cx, bz = wall.b.y * scale - cy;
+      const dx = bx - ax, dz = bz - az;
+      const length = Math.hypot(dx, dz);
       if (length < 0.05) continue;
+      const angle = -Math.atan2(dz, dx);
+      const thickness = props.metersPerPixel ? Math.max(0.08, wall.thickness * scale) : props.wallThicknessM;
+      const wallOpenings = props.openings.filter((o) => o.wallId === wall.id).sort((a, b) => a.centerT - b.centerT);
 
-      const wallOpenings = props.openings
-        .filter((o) => o.wallId === wall.id)
-        .map((o) => {
-          const center = o.t * length;
-          return { ...o, start: Math.max(0, center - o.widthM / 2), end: Math.min(length, center + o.widthM / 2) };
-        })
-        .sort((a, b) => a.start - b.start);
-
-      let cursor = 0;
-      for (const opening of wallOpenings) {
-        if (opening.start > cursor) addBoxOnWall(wall, cursor, opening.start, 0, props.wallHeight, wallMat);
-        const top = Math.min(props.wallHeight, opening.sillM + opening.heightM);
-        if (opening.sillM > 0) addBoxOnWall(wall, opening.start, opening.end, 0, opening.sillM, wallMat);
-        if (top < props.wallHeight) addBoxOnWall(wall, opening.start, opening.end, top, props.wallHeight, wallMat);
-
-        const frameDepth = Math.max(0.08, props.wallThicknessM * 0.45);
-        const openingCenter = (opening.start + opening.end) / 2;
-        const ux = (bx - ax) / length;
-        const uz = (bz - az) / length;
-        const thickness = props.metersPerPixel ? Math.max(0.08, wall.thickness * scale) : props.wallThicknessM;
-        const frame = new THREE.Mesh(
-          new THREE.BoxGeometry(Math.max(0.08, opening.end - opening.start - 0.08), Math.max(0.1, opening.heightM - 0.08), frameDepth),
-          opening.kind === "window" ? glassMat : frameMat
-        );
-        frame.position.set(
-          ax + ux * openingCenter,
-          opening.sillM + opening.heightM / 2,
-          az + uz * openingCenter
-        );
-        frame.rotation.y = -Math.atan2(bz - az, bx - ax);
-        frame.position.x += -uz * thickness * 0.15;
-        frame.position.z += ux * thickness * 0.15;
-        group.add(frame);
-        cursor = Math.max(cursor, opening.end);
+      if (!wallOpenings.length) {
+        addBox(length, props.wallHeight, thickness, (ax + bx) / 2, props.wallHeight / 2, (az + bz) / 2, angle);
+        continue;
       }
-      if (cursor < length) addBoxOnWall(wall, cursor, length, 0, props.wallHeight, wallMat);
+
+      const ux = dx / length, uz = dz / length;
+      let cursor = 0;
+      for (const o of wallOpenings) {
+        const center = o.centerT * length;
+        const half = Math.min(o.widthM / 2, length * 0.45);
+        const start = Math.max(cursor, center - half);
+        const end = Math.min(length, center + half);
+
+        if (start > cursor) {
+          const seg = start - cursor;
+          const sMid = cursor + seg / 2;
+          addBox(seg, props.wallHeight, thickness, ax + ux * sMid, props.wallHeight / 2, az + uz * sMid, angle);
+        }
+
+        const openingWidth = Math.max(0.05, end - start);
+        const sill = Math.max(0, Math.min(o.sillM, props.wallHeight));
+        const top = Math.min(props.wallHeight, sill + o.heightM);
+        if (sill > 0.01) {
+          const m = start + openingWidth / 2;
+          addBox(openingWidth, sill, thickness, ax + ux * m, sill / 2, az + uz * m, angle);
+        }
+        if (top < props.wallHeight - 0.01) {
+          const m = start + openingWidth / 2;
+          const h = props.wallHeight - top;
+          addBox(openingWidth, h, thickness, ax + ux * m, top + h / 2, az + uz * m, angle);
+        }
+
+        const fm = start + openingWidth / 2;
+        if (o.kind === "window") {
+          addBox(openingWidth, 0.07, thickness + 0.03, ax + ux * fm, sill + 0.035, az + uz * fm, angle, frameMat);
+        }
+        cursor = Math.max(cursor, end);
+      }
+
+      if (cursor < length) {
+        const seg = length - cursor;
+        const sMid = cursor + seg / 2;
+        addBox(seg, props.wallHeight, thickness, ax + ux * sMid, props.wallHeight / 2, az + uz * sMid, angle);
+      }
     }
     scene.add(group);
 
@@ -532,7 +570,7 @@ function ThreePreview(props: {
     const planH = Math.max(10, props.imageSize.h * scale);
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(planW + 4, planH + 4),
-      new THREE.MeshStandardMaterial({ color: 0xd9d1c5, roughness: 1 })
+      new THREE.MeshStandardMaterial({ color: 0xd8d0c3, roughness: 1 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -542,11 +580,8 @@ function ThreePreview(props: {
     grid.position.y = 0.003;
     scene.add(grid);
 
-    let dragging = false;
-    let lastX = 0;
-    let lastY = 0;
-    let yaw = 0.7;
-    let pitch = 0.72;
+    let dragging = false, lastX = 0, lastY = 0;
+    let yaw = 0.7, pitch = 0.72;
     let radius = Math.max(18, Math.max(planW, planH) * 1.05);
 
     const updateCamera = () => {
@@ -565,8 +600,7 @@ function ThreePreview(props: {
       if (!dragging) return;
       yaw -= (e.clientX - lastX) * 0.008;
       pitch += (e.clientY - lastY) * 0.006;
-      lastX = e.clientX;
-      lastY = e.clientY;
+      lastX = e.clientX; lastY = e.clientY;
       updateCamera();
     };
     const up = () => { dragging = false; };
@@ -576,15 +610,13 @@ function ThreePreview(props: {
       radius = Math.max(5, Math.min(120, radius));
       updateCamera();
     };
-
     renderer.domElement.addEventListener("pointerdown", down);
     renderer.domElement.addEventListener("pointermove", move);
     renderer.domElement.addEventListener("pointerup", up);
     renderer.domElement.addEventListener("wheel", wheel, { passive: false });
 
     const resize = new ResizeObserver(() => {
-      const w = el.clientWidth;
-      const h = Math.max(1, el.clientHeight);
+      const w = el.clientWidth, h = Math.max(1, el.clientHeight);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
@@ -592,10 +624,7 @@ function ThreePreview(props: {
     resize.observe(el);
 
     let frame = 0;
-    const loop = () => {
-      renderer.render(scene, camera);
-      frame = requestAnimationFrame(loop);
-    };
+    const loop = () => { renderer.render(scene, camera); frame = requestAnimationFrame(loop); };
     loop();
 
     return () => {
@@ -611,8 +640,8 @@ function ThreePreview(props: {
 
   return (
     <div className="three-wrap" ref={mount}>
-      {!props.walls.length && <div className="three-hint">ارسم أو استخرج الجدران لتظهر هنا مباشرة</div>}
-      <div className="three-badge">فتحات حقيقية • اسحب للدوران • عجلة للتقريب</div>
+      {!props.walls.length && <div className="three-hint">اكتشف أو ارسم الجدران لتظهر هنا</div>}
+      <div className="three-badge">اسحب للدوران • عجلة للتقريب</div>
     </div>
   );
 }
