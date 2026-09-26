@@ -12,6 +12,10 @@ from render_images_v2 import render_exterior, render_interior
 
 MODEL = os.getenv(
     "CLOUDFLARE_MODEL",
+    "@cf/black-forest-labs/flux-2-klein-9b",
+)
+FALLBACK_MODEL = os.getenv(
+    "CLOUDFLARE_FALLBACK_MODEL",
     "@cf/black-forest-labs/flux-2-klein-4b",
 )
 ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
@@ -21,6 +25,14 @@ TIMEOUT_SECONDS = int(os.getenv("CLOUDFLARE_RENDER_TIMEOUT", "150"))
 
 def configured() -> bool:
     return bool(ACCOUNT_ID and API_TOKEN)
+
+
+def primary_model() -> str:
+    return MODEL
+
+
+def fallback_model() -> str:
+    return FALLBACK_MODEL
 
 
 def _resize_reference(png: bytes, max_side: int = 480) -> bytes:
@@ -134,16 +146,25 @@ def render_with_cloudflare(kind: str, payload: dict[str, Any]) -> bytes:
         "guidance": os.getenv("CLOUDFLARE_GUIDANCE", "4.0"),
     }
 
-    endpoint = (
-        f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL}"
-    )
-    response = requests.post(
-        endpoint,
-        headers={"Authorization": f"Bearer {API_TOKEN}"},
-        data=form,
-        files=files,
-        timeout=TIMEOUT_SECONDS,
-    )
+    def run_model(model_name: str) -> requests.Response:
+        endpoint = (
+            f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{model_name}"
+        )
+        return requests.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {API_TOKEN}"},
+            data=form,
+            files=files,
+            timeout=TIMEOUT_SECONDS,
+        )
+
+    response = run_model(MODEL)
+    if (
+        response.status_code in (429, 500, 502, 503, 504)
+        and FALLBACK_MODEL
+        and FALLBACK_MODEL != MODEL
+    ):
+        response = run_model(FALLBACK_MODEL)
 
     if response.status_code >= 400:
         detail = response.text[:700]
