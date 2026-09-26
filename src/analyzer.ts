@@ -11,7 +11,7 @@ export type AnalyzeResponse = {
   walls: AnalyzerWall[];
 };
 
-const DEFAULT_ANALYZER_URL = "https://manzel-h-analyzer.onrender.com";
+const DEFAULT_ANALYZER_URL = "https://manzel-h-analyzer-v2.onrender.com";
 
 export async function analyzeWithRemote(
   imageUrl: string,
