@@ -69,7 +69,7 @@ jobs:
           UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           ALIGNED="/tmp/Manzel-H-aligned.apk"
           "$ANDROID_HOME/build-tools/$BUILD_TOOLS/zipalign" -f -v 4 "$UNSIGNED" "$ALIGNED"
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" sign             --key /tmp/manzel-h-key.pem             --cert /tmp/manzel-h-cert.pem             --out Manzel-H.apk             "$ALIGNED"
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" sign --key /tmp/manzel-h-key.pk8 --cert /tmp/manzel-h-cert.der --out Manzel-H.apk "$ALIGNED"
           "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs Manzel-H.apk
 
       - uses: actions/upload-artifact@v4
