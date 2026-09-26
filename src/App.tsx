@@ -21,6 +21,7 @@ function App() {
   const [exteriorWallIds, setExteriorWallIds] = useState<string[]>([]);
   const [roomNames, setRoomNames] = useState<Record<string, string>>({});
   const [tool, setTool] = useState<Tool>("select");
+  const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [calibration, setCalibration] = useState<Point[]>([]);
   const [calibrationEvidence, setCalibrationEvidence] = useState<CalibrationEvidence[]>([]);
@@ -331,6 +332,31 @@ function App() {
 
   const removeOpening = (id: string) => setOpenings((v) => v.filter((o) => o.id !== id));
 
+  const selectedWall = walls.find((wall) => wall.id === selectedWallId) || null;
+
+  const setSelectedWallLengthM = (lengthM: number) => {
+    if (!selectedWall || !metersPerPixel || lengthM <= 0) return;
+    const currentPx = dist(selectedWall.a, selectedWall.b);
+    if (currentPx <= 0) return;
+    const targetPx = lengthM / metersPerPixel;
+    const ux = (selectedWall.b.x - selectedWall.a.x) / currentPx;
+    const uy = (selectedWall.b.y - selectedWall.a.y) / currentPx;
+    setWalls((items) => items.map((wall) =>
+      wall.id === selectedWall.id
+        ? { ...wall, b: { x: wall.a.x + ux * targetPx, y: wall.a.y + uy * targetPx } }
+        : wall
+    ));
+  };
+
+  const setSelectedWallThicknessM = (thicknessM: number) => {
+    if (!selectedWall || !metersPerPixel || thicknessM <= 0) return;
+    setWalls((items) => items.map((wall) =>
+      wall.id === selectedWall.id
+        ? { ...wall, thickness: thicknessM / metersPerPixel }
+        : wall
+    ));
+  };
+
   const roomKey = (room: Room) => `${Math.round(room.centroid.x / 10)}:${Math.round(room.centroid.y / 10)}`;
   const renameRoom = (room: Room, name: string) => {
     const key = roomKey(room);
@@ -431,7 +457,7 @@ function App() {
       <section className="toolbar">
         <label className="upload">رفع المخطط<input type="file" accept="image/*,application/pdf,.pdf" onChange={(e) => onUpload(e.target.files?.[0])} /></label>
         <button className={tool === "calibrate" ? "active" : ""} onClick={() => { setTool("calibrate"); setCalibration([]); }}>معايرة</button>\n        <button onClick={() => { setCalibration([]); setCalibrationEvidence([]); setCalibrationSpreadPct(null); setMetersPerPixel(null); }}>إعادة المعايرة</button>
-        <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
+        <button className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>تحديد</button>\n        <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>جدار</button>
         <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>باب</button>
         <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>نافذة</button>
         <button onClick={autoTrace} disabled={!imageUrl}>تحليل الجدران</button>
@@ -474,8 +500,7 @@ function App() {
                       x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y}
                       strokeWidth={Math.max(4, w.thickness)}
                       strokeLinecap="square"
-                      className={exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"}
-                      onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); }}
+                      className={`${exteriorWallIds.includes(w.id) ? "wall-line exterior-wall" : "wall-line"} ${selectedWallId === w.id ? "selected-wall" : ""}`}\n                      onClick={(e) => { if (tool === "select") { e.stopPropagation(); setSelectedWallId(w.id); } }}\n                      onDoubleClick={(e) => { e.stopPropagation(); removeWall(w.id); setSelectedWallId(null); }}
                     />
                     {scaleReady && dist(w.a, w.b) * metersPerPixel! >= 1 && (
                       <text
@@ -552,6 +577,31 @@ function App() {
             </select>
           </label>
         </div>
+
+        {selectedWall && scaleReady && (
+          <div className="precision-editor">
+            <strong>تحرير الجدار بدقة</strong>
+            <label>الطول الحقيقي (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0.05"
+                value={(dist(selectedWall.a, selectedWall.b) * metersPerPixel!).toFixed(3)}
+                onChange={(e) => setSelectedWallLengthM(Number(e.target.value))}
+              />
+            </label>
+            <label>السماكة (م)
+              <input
+                type="number"
+                step="0.001"
+                min="0.05"
+                value={(selectedWall.thickness * metersPerPixel!).toFixed(3)}
+                onChange={(e) => setSelectedWallThicknessM(Number(e.target.value))}
+              />
+            </label>
+            <button onClick={() => setSelectedWallId(null)}>إنهاء التحديد</button>
+          </div>
+        )}
 
         <div className="toggle-row">
           <label><input type="checkbox" checked={roofVisible} onChange={(e) => setRoofVisible(e.target.checked)} /> سقف</label>
