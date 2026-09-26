@@ -10,8 +10,9 @@ import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from house_builder import build_house_glb
+from render_images import render_interior, render_exterior
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Yytsi/floorplan-to-3d-walls")
 DEVICE_NAME = os.getenv("DEVICE", "auto")
@@ -421,13 +422,20 @@ async def analyze(
 
 class HouseBuildRequest(BaseModel):
     walls: list[dict]
-    openings: list[dict] = []
+    openings: list[dict] = Field(default_factory=list)
+    rooms: list[dict] = Field(default_factory=list)
     imageSize: dict
     metersPerPixel: float
     wallHeight: float = 3.2
     wallThicknessM: float = 0.2
     style: str = "سعودي حديث"
-    exteriorWallIds: list[str] = []
+    exteriorWallIds: list[str] = Field(default_factory=list)
+    floors: int = 1
+    furnishing: str = "full"
+    garden: bool = True
+    parking: bool = True
+    fence: bool = True
+    entrance: str = "formal"
 
 
 @app.post("/build-house")
@@ -443,4 +451,27 @@ def build_house(payload: HouseBuildRequest):
         content=glb,
         media_type="model/gltf-binary",
         headers={"Content-Disposition": 'inline; filename="manzel-h.glb"'},
+    )
+
+
+
+@app.post("/render-image/{kind}")
+def render_image(kind: str, payload: HouseBuildRequest):
+    data = payload.model_dump()
+    try:
+        if kind == "interior":
+            png = render_interior(data)
+        elif kind == "exterior":
+            png = render_exterior(data)
+        else:
+            raise HTTPException(status_code=404, detail="unknown render kind")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="image render failed") from exc
+
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="manzel-h-{kind}.png"'},
     )
