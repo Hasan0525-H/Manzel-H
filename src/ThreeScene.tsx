@@ -136,59 +136,50 @@ function makePatternTexture(
   return texture;
 }
 
-function enhancedRemoteMaterial(
-  original: THREE.Material,
-  renderer: THREE.WebGLRenderer,
-  mobile: boolean,
-  cache: Map<string, THREE.Texture>,
-): THREE.Material {
-  const source = original as THREE.MeshStandardMaterial;
+function enhancedRemoteMaterial(original: THREE.Material): THREE.Material {
   const name = (original.name || "").toLowerCase();
-  const color = source.color?.clone() ?? new THREE.Color(0xffffff);
+
+  const color =
+    name.includes("glass") ? 0x6e97a7 :
+    name.includes("grass") ? 0x6f8f5e :
+    name.includes("drive") ? 0x676b6d :
+    name.includes("site") ? 0xb8aa94 :
+    name.includes("stone") ? 0xb79a77 :
+    name.includes("wood") || name.includes("metal") ? 0x6e4b35 :
+    name.includes("tile") ? 0xd8cbb8 :
+    name.includes("fabric") ? 0xa69785 :
+    name.includes("white") ? 0xeee9df :
+    0xdfd2bf;
 
   if (name.includes("glass")) {
     return new THREE.MeshPhysicalMaterial({
       name: original.name,
       color,
-      roughness: 0.08,
-      metalness: 0.03,
+      roughness: 0.12,
+      metalness: 0.02,
       transparent: true,
-      opacity: 0.54,
-      transmission: mobile ? 0.05 : 0.16,
-      thickness: 0.04,
-      envMapIntensity: 1.35,
+      opacity: 0.58,
+      transmission: 0.08,
+      thickness: 0.03,
+      envMapIntensity: 0.85,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
   }
 
-  let kind: PatternKind = "stucco";
-  if (name.includes("stone")) kind = "stone";
-  else if (name.includes("wood") || name.includes("metal")) kind = "wood";
-  else if (name.includes("tile")) kind = "tile";
-  else if (name.includes("grass")) kind = "grass";
-  else if (name.includes("drive")) kind = "drive";
-  else if (name.includes("site")) kind = "site";
-
-  let map = cache.get(kind);
-  if (!map) {
-    map = makePatternTexture(kind, renderer, mobile);
-    cache.set(kind, map);
-  }
-
-  const material = new THREE.MeshStandardMaterial({
+  return new THREE.MeshStandardMaterial({
     name: original.name,
     color,
-    map,
     roughness:
-      kind === "wood" ? 0.54 :
-      kind === "tile" ? 0.66 :
-      kind === "stucco" ? 0.88 :
-      0.92,
-    metalness: kind === "wood" ? 0.05 : 0,
-    envMapIntensity: kind === "stucco" ? 0.72 : 0.9,
+      name.includes("wood") ? 0.58 :
+      name.includes("tile") ? 0.70 :
+      name.includes("stone") ? 0.86 :
+      name.includes("grass") ? 0.96 :
+      0.82,
+    metalness: name.includes("metal") ? 0.08 : 0.0,
+    envMapIntensity: 0.55,
+    side: THREE.DoubleSide,
   });
-  return material;
 }
 
 export default function ThreeScene(props: Props) {
@@ -260,17 +251,17 @@ export default function ThreeScene(props: Props) {
     renderer.setSize(host.clientWidth, host.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = real ? 1.06 : 1.0;
+    renderer.toneMappingExposure = real ? 1.22 : 1.0;
     renderer.shadowMap.enabled = real;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.domElement.style.touchAction = "none";
     rendererRef.current = renderer;
     host.replaceChildren(renderer.domElement);
 
-    const hemi = new THREE.HemisphereLight(0xffffff, real ? 0x7a7469 : 0xbdbdbd, real ? 1.7 : 2.4);
+    const hemi = new THREE.HemisphereLight(0xffffff, real ? 0x9b8e7b : 0xbdbdbd, real ? 2.35 : 2.4);
     scene.add(hemi);
 
-    const sun = new THREE.DirectionalLight(0xfff4de, real ? 3.8 : 1.7);
+    const sun = new THREE.DirectionalLight(0xfff1d6, real ? 2.7 : 1.7);
     sun.position.set(16, 26, 12);
     sun.castShadow = real;
     sun.shadow.mapSize.set(mobile ? 1024 : 2048, mobile ? 1024 : 2048);
@@ -280,14 +271,13 @@ export default function ThreeScene(props: Props) {
     sun.shadow.normalBias = 0.03;
     scene.add(sun);
 
-    const fill = new THREE.DirectionalLight(0xc8def4, real ? 0.75 : 0.25);
+    const fill = new THREE.DirectionalLight(0xd7e8f5, real ? 1.15 : 0.25);
     fill.position.set(-12, 10, -14);
     scene.add(fill);
 
     let controls: import("three/examples/jsm/controls/OrbitControls.js").OrbitControls | null = null;
     let environmentTexture: THREE.Texture | null = null;
     let disposed = false;
-    const textureCache = new Map<string, THREE.Texture>();
 
     Promise.all([
       import("three/examples/jsm/controls/OrbitControls.js"),
@@ -521,7 +511,7 @@ export default function ThreeScene(props: Props) {
 
               const raw = Array.isArray(obj.material) ? obj.material : [obj.material];
               const upgraded = raw.map((mat) => {
-                const result = enhancedRemoteMaterial(mat, renderer, mobile, textureCache);
+                const result = enhancedRemoteMaterial(mat);
                 materialIndex += 1;
                 return result;
               });
