@@ -83,4 +83,6 @@ export type ProjectSnapshot = {
   walls: Wall[];
   openings: Opening[];
   rooms: Room[];
+  columns?: Column[];
+  stairs?: Stair[];
 };
