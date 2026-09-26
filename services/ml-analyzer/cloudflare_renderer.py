@@ -191,6 +191,20 @@ wood/metal accents, warm exterior lighting, and realistic sky.
 """
 
 
+def _normalize_output_png(image_bytes: bytes) -> bytes:
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception as exc:
+        raise RuntimeError("Cloudflare returned invalid image bytes") from exc
+
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    png = out.getvalue()
+    if len(png) < 10_000:
+        raise RuntimeError("Normalized Cloudflare image is unexpectedly small")
+    return png
+
+
 def _decode_cloudflare_response(response: requests.Response) -> bytes:
     content_type = response.headers.get("content-type", "")
     if content_type.startswith("image/"):
@@ -222,7 +236,7 @@ def render_with_cloudflare(kind: str, payload: dict[str, Any]) -> bytes:
         raise RuntimeError("Cloudflare Workers AI credentials are not configured")
 
     refs = _reference_images(kind, payload)
-    width, height = ((1536, 1536) if kind == "interior" else (1440, 1920))
+    width, height = ((1920, 1920) if kind == "interior" else (1440, 1920))
 
     files = {
         f"input_image_{index}": (f"reference-{index}.png", image, "image/png")
@@ -293,4 +307,4 @@ def render_with_cloudflare(kind: str, payload: dict[str, Any]) -> bytes:
     image_bytes = _decode_cloudflare_response(response)
     if len(image_bytes) < 10_000:
         raise RuntimeError("Cloudflare returned an unexpectedly small image")
-    return image_bytes
+    return _normalize_output_png(image_bytes)
