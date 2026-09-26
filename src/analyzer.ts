@@ -1,17 +1,19 @@
-import type { Wall } from "./types";
+import type { Opening, Wall } from "./types";
 
 type AnalyzerWall = Wall & {
-  confidence: number;
-  orientation: "horizontal" | "vertical" | "diagonal";
+  confidence?: number;
+  orientation?: "horizontal" | "vertical" | "diagonal";
 };
 
 export type AnalyzeResponse = {
   width: number;
   height: number;
+  engine?: string;
   walls: AnalyzerWall[];
+  openings?: Opening[];
 };
 
-const DEFAULT_ANALYZER_URL = "https://manzel-h-analyzer-v2.onrender.com";
+const DEFAULT_ANALYZER_URL = "https://manzel-h-ml-analyzer-v11.onrender.com";
 
 export async function analyzeWithRemote(
   imageUrl: string,
@@ -31,7 +33,7 @@ export async function analyzeWithRemote(
   }
 
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 45000);
+  const timer = window.setTimeout(() => controller.abort(), 90000);
   try {
     const response = await fetch(`${base.replace(/\/$/, "")}/analyze`, {
       method: "POST",
