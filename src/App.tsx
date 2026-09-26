@@ -81,8 +81,6 @@ function App() {
       rooms,
       columns,
       stairs,
-      floors: (() => { const active = currentFloor(); const list = floors.some((f) => f.id === active.id) ? floors.map((f) => f.id === active.id ? active : f) : [...floors, active]; return list; })(),
-      activeFloorId,
     };
   };
 
@@ -559,6 +557,13 @@ function App() {
       rooms,
       columns,
       stairs,
+      floors: (() => {
+        const active = currentFloor();
+        return floors.some((f) => f.id === active.id)
+          ? floors.map((f) => f.id === active.id ? active : f)
+          : [...floors, active];
+      })(),
+      activeFloorId,
     };
   }
 
