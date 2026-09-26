@@ -13,7 +13,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 from house_builder import build_house_glb
 from render_images_v2 import render_exterior, render_interior
-from cloudflare_renderer import configured as cloudflare_configured, render_with_cloudflare
+from cloudflare_renderer import configured as cloudflare_configured, render_with_cloudflare, primary_model, fallback_model
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Yytsi/floorplan-to-3d-walls")
 DEVICE_NAME = os.getenv("DEVICE", "auto")
@@ -139,6 +139,8 @@ def health():
         "house_builder": True,
         "render_platform": "cloudflare-workers-ai-flux2",
         "render_configured": cloudflare_configured(),
+        "render_model": primary_model(),
+        "render_fallback_model": fallback_model(),
     }
 
 
