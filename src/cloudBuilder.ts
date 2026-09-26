@@ -1,6 +1,6 @@
 import type { Opening, Room, Wall } from "./types";
 
-const CLOUD_HOUSE_URL = "https://manzel-h-ai-v15.onrender.com";
+const CLOUD_HOUSE_URL = "https://manzel-h-studio-v142.onrender.com";
 
 export type DesignOptions = {
   floors: number;
@@ -29,6 +29,7 @@ async function postBlob(path: string, args: CloudHouseArgs, timeoutMs: number): 
   const base = configured || CLOUD_HOUSE_URL;
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const response = await fetch(`${base.replace(/\/$/, "")}${path}`, {
       method: "POST",
@@ -41,12 +42,6 @@ async function postBlob(path: string, args: CloudHouseArgs, timeoutMs: number): 
   } finally {
     window.clearTimeout(timer);
   }
-}
-
-export async function buildHouseInCloud(args: CloudHouseArgs): Promise<string> {
-  const blob = await postBlob("/build-house", args, 120000);
-  if (blob.size < 1000) throw new Error("Empty GLB");
-  return URL.createObjectURL(blob);
 }
 
 export async function renderImageInCloud(
