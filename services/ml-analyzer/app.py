@@ -389,17 +389,28 @@ async def analyze(
     file: UploadFile = File(...),
     meters_per_pixel: float = Form(0.02),
 ):
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=415, detail="image required")
-
     raw = await file.read()
     if not raw or len(raw) > MAX_UPLOAD:
         raise HTTPException(status_code=413, detail="invalid upload size")
 
+    is_pdf = file.content_type == "application/pdf" or (file.filename or "").lower().endswith(".pdf")
     try:
-        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        if is_pdf:
+            import pypdfium2 as pdfium
+            pdf = pdfium.PdfDocument(raw)
+            if len(pdf) < 1:
+                raise ValueError("empty pdf")
+            page = pdf[0]
+            bitmap = page.render(scale=2.2)
+            image = bitmap.to_pil().convert("RGB")
+        else:
+            if file.content_type and not file.content_type.startswith("image/"):
+                raise HTTPException(status_code=415, detail="image or pdf required")
+            image = Image.open(io.BytesIO(raw)).convert("RGB")
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="invalid image") from exc
+        raise HTTPException(status_code=400, detail="invalid image or pdf") from exc
 
     rgb = np.asarray(image)
     height, width = rgb.shape[:2]
@@ -462,15 +473,11 @@ def render_image(kind: str, payload: HouseBuildRequest):
     data = payload.model_dump()
     if kind not in ("interior", "exterior"):
         raise HTTPException(status_code=404, detail="unknown render kind")
-    if not fal_configured():
-        raise HTTPException(status_code=503, detail="photorealistic renderer is not configured")
 
     try:
-        png = render_with_fal(kind, data)
-    except HTTPException:
-        raise
+        png = render_interior(data, size=1536) if kind == "interior" else render_exterior(data, width=1536, height=2048)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="fal.ai render failed") from exc
+        raise HTTPException(status_code=500, detail="server render failed") from exc
 
     return Response(
         content=png,
