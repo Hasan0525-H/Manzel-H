@@ -297,7 +297,7 @@ button { cursor: pointer; }
 .final-screen {
   display: grid;
   grid-template-rows: calc(62px + env(safe-area-inset-top)) 1fr auto;
-  background: #111;
+  background: #ece9e2;
 }
 .final-stage {
   background: #dfe3e4;
@@ -309,7 +309,7 @@ button { cursor: pointer; }
   height: 100%;
   object-fit: contain;
   display: block;
-  background: #111;
+  background: #ece9e2;
 }
 .result-tabs {
   display: grid;
