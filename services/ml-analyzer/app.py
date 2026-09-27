@@ -19,6 +19,7 @@ from cloudflare_renderer import (
     render_plan_with_cloudflare,
     render_with_cloudflare,
 )
+from render_images_v2 import render_exterior, render_interior
 
 MAX_UPLOAD = 18 * 1024 * 1024
 
@@ -296,9 +297,6 @@ async def render_plan(
 ):
     if kind not in ("interior", "exterior"):
         raise HTTPException(status_code=404, detail="unknown render kind")
-    if not cloudflare_configured():
-        raise HTTPException(status_code=503, detail="Cloudflare Workers AI is not configured")
-
     raw = await file.read()
     if not raw or len(raw) > MAX_UPLOAD:
         raise HTTPException(status_code=413, detail="invalid upload size")
@@ -316,11 +314,36 @@ async def render_plan(
     }
 
     try:
-        png = render_plan_with_cloudflare(kind, plan_png, options)
+        if cloudflare_configured():
+            png = render_plan_with_cloudflare(kind, plan_png, options)
+        else:
+            width, height, walls = _lightweight_geometry(image)
+            payload = {
+                "walls": walls,
+                "openings": [],
+                "rooms": [],
+                "imageSize": {"w": width, "h": height},
+                "metersPerPixel": 0.02,
+                "wallHeight": 3.2,
+                "wallThicknessM": 0.2,
+                "style": options["style"],
+                "exteriorWallIds": [],
+                "floors": options["floors"],
+                "furnishing": options["furnishing"],
+                "garden": options["garden"],
+                "parking": options["parking"],
+                "fence": options["fence"],
+                "entrance": options["entrance"],
+            }
+            png = (
+                render_interior(payload, size=1536)
+                if kind == "interior"
+                else render_exterior(payload, width=1536, height=2048)
+            )
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Cloudflare direct-plan render failed: {type(exc).__name__}",
+            detail=f"Plan render failed: {type(exc).__name__}",
         ) from exc
 
     return Response(
@@ -353,15 +376,20 @@ class HouseBuildRequest(BaseModel):
 def render_image(kind: str, payload: HouseBuildRequest):
     if kind not in ("interior", "exterior"):
         raise HTTPException(status_code=404, detail="unknown render kind")
-    if not cloudflare_configured():
-        raise HTTPException(status_code=503, detail="Cloudflare Workers AI is not configured")
-
     try:
-        png = render_with_cloudflare(kind, payload.model_dump())
+        data = payload.model_dump()
+        if cloudflare_configured():
+            png = render_with_cloudflare(kind, data)
+        else:
+            png = (
+                render_interior(data, size=1536)
+                if kind == "interior"
+                else render_exterior(data, width=1536, height=2048)
+            )
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Cloudflare render failed: {type(exc).__name__}",
+            detail=f"Render failed: {type(exc).__name__}",
         ) from exc
 
     return Response(content=png, media_type="image/png")
