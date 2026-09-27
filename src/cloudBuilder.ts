@@ -1,6 +1,7 @@
 import type { Opening, Room, Wall } from "./types";
 
 const CLOUD_HOUSE_URL = "https://manzel-h-studio-v142.onrender.com";
+const CLOUD_JOB_URL = "https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev";
 
 export type DesignOptions = {
   floors: number;
@@ -105,10 +106,7 @@ type RenderJobResponse = {
 
 function jobApiBase(): string {
   const configured = import.meta.env.VITE_JOB_API_URL?.trim();
-  if (!configured) {
-    throw new Error("Cloud job API is not configured");
-  }
-  return configured.replace(/\/$/, "");
+  return (configured || CLOUD_JOB_URL).replace(/\/$/, "");
 }
 
 async function fetchWithTimeout(
