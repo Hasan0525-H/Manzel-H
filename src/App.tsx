@@ -77,6 +77,18 @@ export default function App() {
     if (fileRef.current) fileRef.current.value = "";
   };
 
+  const renderWithFallback = async (kind: ResultTab): Promise<string> => {
+    if (useQueuedCloud) {
+      try {
+        return await renderPlanViaJob(kind, planFile!, options);
+      } catch (jobError) {
+        console.warn("Queued cloud render failed; falling back to direct renderer", jobError);
+      }
+    }
+
+    return await renderPlanInCloud(kind, planFile!, options);
+  };
+
   const runPipeline = async () => {
     if (!planFile) return;
 
@@ -92,18 +104,14 @@ export default function App() {
       // No Torch/ML analysis runs on the phone or on the free Render instance.
       if (options.outputs.includes("interior")) {
         try {
-          interior = useQueuedCloud
-            ? await renderPlanViaJob("interior", planFile, options)
-            : await renderPlanInCloud("interior", planFile, options);
+          interior = await renderWithFallback("interior");
         } catch {
           interior = null;
         }
       }
       if (options.outputs.includes("exterior")) {
         try {
-          exterior = useQueuedCloud
-            ? await renderPlanViaJob("exterior", planFile, options)
-            : await renderPlanInCloud("exterior", planFile, options);
+          exterior = await renderWithFallback("exterior");
         } catch {
           exterior = null;
         }
