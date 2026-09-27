@@ -1,4 +1,5 @@
 name: deploy-cloudflare-jobs
+# retrigger after Cloudflare secrets configured
 
 on:
   workflow_dispatch:
