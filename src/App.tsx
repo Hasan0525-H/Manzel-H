@@ -27,7 +27,7 @@ export default function App() {
   const [exteriorUrl, setExteriorUrl] = useState<string | null>(null);
   const [resultTab, setResultTab] = useState<ResultTab>("interior");
   const [error, setError] = useState("");
-  const useQueuedCloud = Boolean(import.meta.env.VITE_JOB_API_URL?.trim());
+  const useQueuedCloud = true;
 
   const fileRef = useRef<HTMLInputElement | null>(null);
   const progressTimer = useRef<number | null>(null);
