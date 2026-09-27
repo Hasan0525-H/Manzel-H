@@ -91,3 +91,99 @@ export async function renderPlanInCloud(
     window.clearTimeout(timer);
   }
 }
+
+
+export type RenderJobStatus = "queued" | "processing" | "done" | "failed";
+
+type RenderJobResponse = {
+  id: string;
+  status: RenderJobStatus;
+  attempts?: number;
+  error?: string | null;
+  resultUrl?: string | null;
+};
+
+function jobApiBase(): string {
+  const configured = import.meta.env.VITE_JOB_API_URL?.trim();
+  if (!configured) {
+    throw new Error("Cloud job API is not configured");
+  }
+  return configured.replace(/\/$/, "");
+}
+
+async function createRenderJob(
+  kind: "interior" | "exterior",
+  file: File,
+  options: DesignOptions,
+): Promise<RenderJobResponse> {
+  const body = new FormData();
+  body.append("file", file, file.name || "floorplan");
+  body.append("kind", kind);
+  body.append("floors", String(options.floors));
+  body.append("furnishing", options.furnishing);
+  body.append("style", options.style);
+  body.append("garden", String(options.garden));
+  body.append("parking", String(options.parking));
+  body.append("fence", String(options.fence));
+  body.append("entrance", options.entrance);
+
+  const response = await fetch(`${jobApiBase()}/jobs/render`, {
+    method: "POST",
+    body,
+  });
+  if (!response.ok) {
+    throw new Error(`Create render job HTTP ${response.status}`);
+  }
+  return await response.json() as RenderJobResponse;
+}
+
+async function waitForRenderJob(
+  id: string,
+  timeoutMs = 15 * 60 * 1000,
+): Promise<RenderJobResponse> {
+  const started = Date.now();
+  let delay = 1500;
+
+  while (Date.now() - started < timeoutMs) {
+    const response = await fetch(`${jobApiBase()}/jobs/${encodeURIComponent(id)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`Render job status HTTP ${response.status}`);
+    }
+
+    const job = await response.json() as RenderJobResponse;
+    if (job.status === "done") return job;
+    if (job.status === "failed") {
+      throw new Error(job.error || "Render job failed");
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, delay));
+    delay = Math.min(5000, Math.round(delay * 1.25));
+  }
+
+  throw new Error("Render job timed out");
+}
+
+async function fetchRenderJobResult(id: string): Promise<string> {
+  const response = await fetch(
+    `${jobApiBase()}/jobs/${encodeURIComponent(id)}/result`,
+    { cache: "no-store" },
+  );
+  if (!response.ok) {
+    throw new Error(`Render job result HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  if (blob.size < 1000) throw new Error("Empty job result");
+  return URL.createObjectURL(blob);
+}
+
+export async function renderPlanViaJob(
+  kind: "interior" | "exterior",
+  file: File,
+  options: DesignOptions,
+): Promise<string> {
+  const created = await createRenderJob(kind, file, options);
+  await waitForRenderJob(created.id);
+  return await fetchRenderJobResult(created.id);
+}
