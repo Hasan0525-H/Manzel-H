@@ -2,6 +2,7 @@ interface Env {
   JOBS: R2Bucket;
   RENDER_QUEUE: Queue<RenderMessage>;
   RENDER_BACKEND_URL: string;
+  AI: Ai;
 }
 
 type RenderKind = "interior" | "exterior";
@@ -160,6 +161,119 @@ async function getResult(id: string, env: Env): Promise<Response> {
   return new Response(obj.body, { headers });
 }
 
+
+function architecturalPrompt(kind: RenderKind, options: RenderOptions): string {
+  const common = [
+    "The supplied reference images all represent the exact same architectural floor plan.",
+    "Treat the floor plan as authoritative geometry.",
+    "Preserve the outer footprint, wall positions, room adjacency, circulation, openings, proportions and orientation.",
+    "Do not mirror, rotate, stretch, merge rooms, remove rooms, or invent structural walls.",
+    "Create premium photorealistic Saudi residential architecture with realistic materials, physically plausible lighting, accurate scale, clean construction details, and no text or watermark.",
+    `Architectural style: ${options.style}. Floor count: ${options.floors}.`,
+  ];
+
+  if (kind === "interior") {
+    const furnishing =
+      options.furnishing === "none"
+        ? "unfurnished, architecture and finishes only"
+        : options.furnishing === "light"
+          ? "lightly furnished with essential high-end furniture"
+          : "fully furnished with elegant premium contemporary furniture";
+
+    return [
+      ...common,
+      "Generate a highly realistic isometric cutaway / dollhouse interior architectural visualization.",
+      "The reference plan must remain visibly traceable one-to-one in the rendered result.",
+      `Furnishing: ${furnishing}.`,
+      "Use realistic stone, plaster, timber, glass, tile, fabric, daylight and indirect architectural lighting.",
+      "Professional archviz quality, crisp details, natural shadows, coherent furniture scale.",
+    ].join(" ");
+  }
+
+  return [
+    ...common,
+    "Generate a premium photorealistic exterior villa facade consistent with the exact footprint.",
+    `Garden: ${options.garden}. Parking: ${options.parking}. Boundary fence: ${options.fence}. Entrance: ${options.entrance}.`,
+    "Use a realistic eye-level architectural camera with straight verticals.",
+    "Saudi-climate landscaping, premium natural stone, warm white plaster, wood, glass and metal.",
+    "High-end real-estate architectural photography, natural sky, realistic daylight and subtle warm facade lighting.",
+  ].join(" ");
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function bytesFromAiResult(result: unknown): Uint8Array {
+  if (result && typeof result === "object" && "image" in result) {
+    const image = (result as { image?: unknown }).image;
+    if (typeof image === "string" && image.length > 100) return base64ToBytes(image);
+  }
+
+  throw new Error("workers_ai_invalid_image_response");
+}
+
+async function prepareReferences(
+  input: R2ObjectBody,
+  job: JobRecord,
+  env: Env,
+): Promise<Uint8Array[]> {
+  const form = new FormData();
+  const bytes = await input.arrayBuffer();
+  form.append("file", new File([bytes], job.filename, { type: job.contentType }));
+
+  const base = env.RENDER_BACKEND_URL.replace(/\/$/, "");
+  const response = await fetch(`${base}/prepare-references`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 220);
+    throw new Error(`prepare_references_${response.status}_${detail}`);
+  }
+
+  const data = await response.json() as { images?: string[] };
+  const images = (data.images || []).slice(0, 4).map(base64ToBytes);
+  if (!images.length) throw new Error("prepare_references_empty");
+  return images;
+}
+
+async function renderWithWorkersAi(
+  kind: RenderKind,
+  references: Uint8Array[],
+  options: RenderOptions,
+  env: Env,
+): Promise<Uint8Array> {
+  const form = new FormData();
+  references.forEach((bytes, index) => {
+    form.append(
+      `input_image_${index}`,
+      new Blob([bytes], { type: "image/png" }),
+      `plan-reference-${index}.png`,
+    );
+  });
+  form.append("prompt", architecturalPrompt(kind, options));
+  form.append("width", kind === "interior" ? "1536" : "1440");
+  form.append("height", kind === "interior" ? "1536" : "1920");
+  form.append("guidance", "4.5");
+
+  const serialized = new Response(form);
+  const contentType = serialized.headers.get("content-type");
+  if (!serialized.body || !contentType) throw new Error("multipart_serialization_failed");
+
+  const result = await env.AI.run("@cf/black-forest-labs/flux-2-klein-9b", {
+    multipart: {
+      body: serialized.body,
+      contentType,
+    },
+  });
+
+  return bytesFromAiResult(result);
+}
+
 async function processJob(message: Message<RenderMessage>, env: Env): Promise<void> {
   const id = message.body.jobId;
   const job = await readJob(env, id);
@@ -177,29 +291,8 @@ async function processJob(message: Message<RenderMessage>, env: Env): Promise<vo
     const input = await env.JOBS.get(job.inputKey);
     if (!input) throw new Error("input_missing");
 
-    const bytes = await input.arrayBuffer();
-    const form = new FormData();
-    form.append("file", new File([bytes], job.filename, { type: job.contentType }));
-    form.append("floors", String(job.options.floors));
-    form.append("furnishing", job.options.furnishing);
-    form.append("style", job.options.style);
-    form.append("garden", String(job.options.garden));
-    form.append("parking", String(job.options.parking));
-    form.append("fence", String(job.options.fence));
-    form.append("entrance", job.options.entrance);
-
-    const base = env.RENDER_BACKEND_URL.replace(/\/$/, "");
-    const response = await fetch(`${base}/render-plan/${job.kind}`, {
-      method: "POST",
-      body: form,
-    });
-
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 300);
-      throw new Error(`backend_${response.status}_${detail}`);
-    }
-
-    const image = await response.arrayBuffer();
+    const references = await prepareReferences(input, job, env);
+    const image = await renderWithWorkersAi(job.kind, references, job.options, env);
     if (image.byteLength < 10_000) throw new Error("result_too_small");
 
     const outputKey = `outputs/${job.id}/${job.kind}.png`;
