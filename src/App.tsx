@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { renderPlanInCloud, renderPlanViaJob, type DesignOptions } from "./cloudBuilder";
+import { renderPlanViaJob, type DesignOptions } from "./cloudBuilder";
 
 type Phase = "upload" | "setup" | "analyzing" | "building" | "result";
 type ResultTab = "interior" | "exterior";
@@ -78,15 +78,7 @@ export default function App() {
   };
 
   const renderWithFallback = async (kind: ResultTab): Promise<string> => {
-    if (useQueuedCloud) {
-      try {
-        return await renderPlanViaJob(kind, planFile!, options);
-      } catch (jobError) {
-        console.warn("Queued cloud render failed; falling back to direct renderer", jobError);
-      }
-    }
-
-    return await renderPlanInCloud(kind, planFile!, options);
+    return await renderPlanViaJob(kind, planFile!, options);
   };
 
   const runPipeline = async () => {
