@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "manzel-h-cloud-jobs",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-20",
+  "workers_dev": true,
+  "r2_buckets": [
+    {
+      "binding": "JOBS",
+      "bucket_name": "manzel-h-jobs"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "RENDER_QUEUE",
+        "queue": "manzel-h-render-jobs"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "manzel-h-render-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "dead_letter_queue": "manzel-h-render-dead"
+      }
+    ]
+  },
+  "vars": {
+    "RENDER_BACKEND_URL": "https://manzel-h-studio-v142.onrender.com"
+  }
+}
