@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { renderPlanInCloud, type DesignOptions } from "./cloudBuilder";
+import { renderPlanInCloud, renderPlanViaJob, type DesignOptions } from "./cloudBuilder";
 
 type Phase = "upload" | "setup" | "analyzing" | "building" | "result";
 type ResultTab = "interior" | "exterior";
@@ -27,6 +27,7 @@ export default function App() {
   const [exteriorUrl, setExteriorUrl] = useState<string | null>(null);
   const [resultTab, setResultTab] = useState<ResultTab>("interior");
   const [error, setError] = useState("");
+  const useQueuedCloud = Boolean(import.meta.env.VITE_JOB_API_URL?.trim());
 
   const fileRef = useRef<HTMLInputElement | null>(null);
   const progressTimer = useRef<number | null>(null);
@@ -91,14 +92,18 @@ export default function App() {
       // No Torch/ML analysis runs on the phone or on the free Render instance.
       if (options.outputs.includes("interior")) {
         try {
-          interior = await renderPlanInCloud("interior", planFile, options);
+          interior = useQueuedCloud
+            ? await renderPlanViaJob("interior", planFile, options)
+            : await renderPlanInCloud("interior", planFile, options);
         } catch {
           interior = null;
         }
       }
       if (options.outputs.includes("exterior")) {
         try {
-          exterior = await renderPlanInCloud("exterior", planFile, options);
+          exterior = useQueuedCloud
+            ? await renderPlanViaJob("exterior", planFile, options)
+            : await renderPlanInCloud("exterior", planFile, options);
         } catch {
           exterior = null;
         }
