@@ -251,7 +251,7 @@ async function renderWithWorkersAi(
   references.forEach((bytes, index) => {
     form.append(
       `input_image_${index}`,
-      new Blob([bytes], { type: "image/png" }),
+      new Blob([bytes.slice().buffer as ArrayBuffer], { type: "image/png" }),
       `plan-reference-${index}.png`,
     );
   });
