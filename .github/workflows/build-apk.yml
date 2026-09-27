@@ -29,6 +29,8 @@ jobs:
         run: npm test
 
       - name: Build web
+        env:
+          VITE_JOB_API_URL: ${{ vars.VITE_JOB_API_URL }}
         run: npm run build
 
       - name: Add Android
