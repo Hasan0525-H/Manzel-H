@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import math
 import os
@@ -8,7 +9,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pydantic import BaseModel, Field
 
 from cloudflare_renderer import (
@@ -218,6 +219,44 @@ def _lightweight_geometry(image: Image.Image):
         wall["id"] = f"cv-wall-{idx}"
 
     return width, height, walls
+
+
+def _reference_payload(image: Image.Image) -> dict:
+    original = image.copy()
+    original.thumbnail((480, 480), Image.Resampling.LANCZOS)
+
+    gray = ImageOps.autocontrast(ImageOps.grayscale(original))
+    contrast = ImageEnhance.Contrast(gray).enhance(2.6)
+    blueprint = contrast.point(lambda value: 255 if value > 205 else 24).convert("RGB")
+
+    edges = gray.filter(ImageFilter.FIND_EDGES)
+    edges = ImageOps.autocontrast(edges)
+    edges = ImageOps.invert(edges)
+    edges = edges.point(lambda value: 255 if value > 218 else 18).convert("RGB")
+
+    structure = blueprint.filter(ImageFilter.MinFilter(3))
+
+    encoded = []
+    for ref in (original.convert("RGB"), blueprint, edges, structure):
+        out = io.BytesIO()
+        ref.save(out, format="PNG", optimize=True)
+        encoded.append(base64.b64encode(out.getvalue()).decode("ascii"))
+
+    return {
+        "images": encoded,
+        "width": image.width,
+        "height": image.height,
+    }
+
+
+@app.post("/prepare-references")
+async def prepare_references(file: UploadFile = File(...)):
+    raw = await file.read()
+    if not raw or len(raw) > MAX_UPLOAD:
+        raise HTTPException(status_code=413, detail="invalid upload size")
+
+    image = _read_plan_image(raw, file.filename or "floorplan", file.content_type)
+    return _reference_payload(image)
 
 
 @app.post("/analyze")
