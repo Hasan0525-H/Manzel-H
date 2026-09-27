@@ -111,6 +111,20 @@ function jobApiBase(): string {
   return configured.replace(/\/$/, "");
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = 30_000,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 async function createRenderJob(
   kind: "interior" | "exterior",
   file: File,
@@ -127,10 +141,10 @@ async function createRenderJob(
   body.append("fence", String(options.fence));
   body.append("entrance", options.entrance);
 
-  const response = await fetch(`${jobApiBase()}/jobs/render`, {
+  const response = await fetchWithTimeout(`${jobApiBase()}/jobs/render`, {
     method: "POST",
     body,
-  });
+  }, 45_000);
   if (!response.ok) {
     throw new Error(`Create render job HTTP ${response.status}`);
   }
@@ -145,9 +159,9 @@ async function waitForRenderJob(
   let delay = 1500;
 
   while (Date.now() - started < timeoutMs) {
-    const response = await fetch(`${jobApiBase()}/jobs/${encodeURIComponent(id)}`, {
+    const response = await fetchWithTimeout(`${jobApiBase()}/jobs/${encodeURIComponent(id)}`, {
       cache: "no-store",
-    });
+    }, 20_000);
     if (!response.ok) {
       throw new Error(`Render job status HTTP ${response.status}`);
     }
@@ -166,9 +180,10 @@ async function waitForRenderJob(
 }
 
 async function fetchRenderJobResult(id: string): Promise<string> {
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `${jobApiBase()}/jobs/${encodeURIComponent(id)}/result`,
     { cache: "no-store" },
+    60_000,
   );
   if (!response.ok) {
     throw new Error(`Render job result HTTP ${response.status}`);
