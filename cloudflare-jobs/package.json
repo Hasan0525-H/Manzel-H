@@ -1,0 +1,15 @@
+{
+  "name": "manzel-h-cloud-jobs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "setup": "wrangler queues create manzel-h-render-jobs || true && wrangler r2 bucket create manzel-h-jobs || true"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "wrangler": "^4.38.0",
+    "@cloudflare/workers-types": "^4.20260920.0"
+  }
+}
