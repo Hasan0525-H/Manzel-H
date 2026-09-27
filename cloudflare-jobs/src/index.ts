@@ -163,43 +163,62 @@ async function getResult(id: string, env: Env): Promise<Response> {
 
 
 function architecturalPrompt(kind: RenderKind, options: RenderOptions): string {
+  const floorRule =
+    options.floors === 1
+      ? "MANDATORY MASSING: EXACTLY ONE STOREY / GROUND FLOOR ONLY. The entire building must have one habitable level only. No first floor, no second floor, no upper balconies, no stacked windows, no double-height facade that looks like another storey. Use a low horizontal single-storey villa silhouette."
+      : `MANDATORY MASSING: EXACTLY ${options.floors} STOREYS, no more and no fewer. Clearly show exactly ${options.floors} habitable levels in the architecture.`;
+
+  const styleRules: Record<string, string> = {
+    "سعودي حديث": "MANDATORY STYLE: contemporary Saudi villa. Saudi/Gulf residential proportions; privacy-first facade; restrained openings; shaded recessed entrance; warm Riyadh/Najdi limestone or local beige stone; warm off-white stucco; subtle dark bronze or wood accents; deep shade; climate-appropriate details. Avoid European, Mediterranean, American, tropical, Moroccan, neoclassical, ornate palace, generic international-box, and all-glass styles.",
+    "نجدي حديث": "MANDATORY STYLE: modern Najdi Saudi architecture. Strong simple earth-toned masses, Riyadh/Najdi limestone and warm sand plaster, deep-set openings, privacy screens inspired by Najdi geometry, shaded entrance, contemporary interpretation without historic ornament overload.",
+    "حجازي حديث": "MANDATORY STYLE: modern Hijazi Saudi architecture. Contemporary western-Saudi villa with shaded openings, refined modern rawasheen-inspired screens, warm light stone and plaster, privacy, deep reveals and climate-responsive facade. No Ottoman or Moroccan pastiche.",
+    "مودرن فاخر": "MANDATORY STYLE: restrained luxury contemporary villa, premium stone, warm plaster, bronze/wood accents, strong horizontal proportions, architectural lighting, no classical ornament.",
+  };
+  const styleRule = styleRules[options.style] || `MANDATORY STYLE: ${options.style}. Follow this selected style literally and do not substitute another architectural style.`;
+
   const common = [
-    "The supplied reference images all represent the exact same architectural floor plan.",
-    "Treat the floor plan as authoritative geometry.",
-    "Preserve the outer footprint, wall positions, room adjacency, circulation, openings, proportions and orientation.",
+    "HARD CONSTRAINTS OVERRIDE BEAUTIFICATION. Never violate the requested storey count or selected architectural style.",
+    floorRule,
+    styleRule,
+    "The supplied reference images all represent the exact same authoritative floor plan.",
+    "Preserve footprint, wall layout, room adjacency, circulation, openings, proportions and orientation.",
     "Do not mirror, rotate, stretch, merge rooms, remove rooms, or invent structural walls.",
-    "Create premium photorealistic Saudi residential architecture with realistic materials, physically plausible lighting, accurate scale, clean construction details, and no text or watermark.",
-    `Architectural style: ${options.style}. Floor count: ${options.floors}.`,
+    "Photorealistic professional architectural visualization, physically plausible materials and lighting, accurate scale, no text, no watermark.",
   ];
 
   if (kind === "interior") {
     const furnishing =
       options.furnishing === "none"
-        ? "unfurnished, architecture and finishes only"
+        ? "MANDATORY FURNISHING: completely unfurnished; architecture and finishes only."
         : options.furnishing === "light"
-          ? "lightly furnished with essential high-end furniture"
-          : "fully furnished with elegant premium contemporary furniture";
+          ? "MANDATORY FURNISHING: lightly furnished; only essential furniture, generous empty space."
+          : "MANDATORY FURNISHING: fully furnished with coherent premium contemporary furniture.";
 
     return [
       ...common,
-      "Generate a highly realistic isometric cutaway / dollhouse interior architectural visualization.",
-      "The reference plan must remain visibly traceable one-to-one in the rendered result.",
-      `Furnishing: ${furnishing}.`,
-      "Use realistic stone, plaster, timber, glass, tile, fabric, daylight and indirect architectural lighting.",
-      "Professional archviz quality, crisp details, natural shadows, coherent furniture scale.",
+      furnishing,
+      "Generate a realistic isometric cutaway / dollhouse interior visualization.",
+      "The plan must remain traceable one-to-one in the result.",
+      "Do not add another floor above the selected floor count.",
     ].join(" ");
   }
 
+  const site = [
+    options.garden ? "Include a landscaped Saudi-climate garden." : "NO GARDEN or decorative planted yard.",
+    options.parking ? "Include clearly usable residential parking." : "NO parking bay, garage, carport or driveway emphasis.",
+    options.fence ? "Include a privacy boundary wall/fence." : "NO boundary wall or fence.",
+    options.entrance === "formal" ? "Use a prominent formal entrance." : "Use a simple understated entrance.",
+  ].join(" ");
+
   return [
     ...common,
-    "Generate a premium photorealistic exterior villa facade consistent with the exact footprint.",
-    `Garden: ${options.garden}. Parking: ${options.parking}. Boundary fence: ${options.fence}. Entrance: ${options.entrance}.`,
-    "Use a realistic eye-level architectural camera with straight verticals.",
-    "Saudi-climate landscaping, premium natural stone, warm white plaster, wood, glass and metal.",
-    "High-end real-estate architectural photography, natural sky, realistic daylight and subtle warm facade lighting.",
-  ].join(" ");
+    "Generate one straight-on eye-level photorealistic exterior villa facade.",
+    site,
+    "The visible massing must make the requested storey count unmistakable.",
+    options.floors === 1 ? "Keep the roofline low and horizontal. One row of normal-height facade openings only." : "",
+    "Saudi climate, realistic daylight, straight verticals, high-end real-estate archviz.",
+  ].filter(Boolean).join(" ");
 }
-
 function base64ToBytes(value: string): Uint8Array {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
