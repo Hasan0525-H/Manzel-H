@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { analyzeWithRemote } from "./analyzer";
 import { renderPlanWithRecovery, type DesignOptions } from "./cloudBuilder";
 
 type Phase = "upload" | "setup" | "analyzing" | "building" | "result";
@@ -51,7 +52,6 @@ export default function App() {
   const [exteriorUrl, setExteriorUrl] = useState<string | null>(null);
   const [resultTab, setResultTab] = useState<ResultTab>("interior");
   const [error, setError] = useState("");
-  const useQueuedCloud = true;
 
   const fileRef = useRef<HTMLInputElement | null>(null);
   const progressTimer = useRef<number | null>(null);
@@ -117,14 +117,21 @@ export default function App() {
 
     setError("");
     startProgress();
-    setPhase("building");
+    let stage: "analysis" | "render" = "analysis";
 
     try {
+      setPhase("analyzing");
+      const analysis = await analyzeWithRemote(planFile, metersPerPixel);
+      if (!analysis.width || !analysis.height) {
+        throw new Error("analysis_invalid_dimensions");
+      }
+
+      stage = "render";
+      setPhase("building");
+
       let interior: string | null = null;
       let exterior: string | null = null;
 
-      // Send the original plan directly to FLUX.2.
-      // No Torch/ML analysis runs on the phone or on the free Render instance.
       if (options.outputs.includes("interior")) {
         try {
           interior = await renderWithFallback("interior");
@@ -140,7 +147,7 @@ export default function App() {
         }
       }
 
-      if (!interior && !exterior) throw new Error("render-unavailable");
+      if (!interior && !exterior) throw new Error("render_unavailable");
 
       clearResults();
       setInteriorUrl(interior);
@@ -149,13 +156,18 @@ export default function App() {
 
       await finishProgress();
       setPhase("result");
-    } catch {
+    } catch (caught) {
       if (progressTimer.current) {
         window.clearInterval(progressTimer.current);
         progressTimer.current = null;
       }
       setProgress(0);
-      setError("تعذر تنفيذ المعالجة السحابية. حاول مرة أخرى.");
+      const detail = caught instanceof Error ? caught.message : "unknown_error";
+      setError(
+        stage === "analysis"
+          ? `تعذر تحليل المخطط سحابياً: ${detail}`
+          : `تعذر إنشاء النتيجة سحابياً: ${detail}`,
+      );
       setPhase("setup");
     }
   };
