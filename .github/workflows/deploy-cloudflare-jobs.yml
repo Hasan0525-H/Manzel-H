@@ -97,3 +97,44 @@ jobs:
             echo "Runtime render returned an unexpectedly small image."
             exit 1
           fi
+
+          python - <<'PY'
+          import base64, json
+          raw = open("/tmp/manzel-smoke.png", "rb").read()
+          payload = {
+              "imageBase64": base64.b64encode(raw).decode("ascii"),
+              "filename": "floorplan.jpg",
+              "contentType": "image/jpeg",
+              "kind": "exterior",
+              "floors": 1,
+              "furnishing": "light",
+              "style": "سعودي حديث",
+              "garden": True,
+              "parking": True,
+              "fence": True,
+              "entrance": "formal",
+          }
+          open("/tmp/render-json-payload.json", "w", encoding="utf-8").write(
+              json.dumps(payload, ensure_ascii=False)
+          )
+          PY
+
+          JSON_CODE="$(curl -sS -o /tmp/render-json-response.json -w '%{http_code}' \
+            -X POST 'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/render-json' \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/render-json-payload.json)"
+
+          echo "runtime_json_http=$JSON_CODE"
+          if [ "$JSON_CODE" != "200" ]; then
+            cat /tmp/render-json-response.json
+            exit 1
+          fi
+
+          python - <<'PY'
+          import base64, json
+          data = json.load(open("/tmp/render-json-response.json", encoding="utf-8"))
+          raw = base64.b64decode(data.get("imageBase64", ""))
+          print("runtime_json_image_bytes", len(raw))
+          if len(raw) < 10000:
+              raise SystemExit("JSON render returned an unexpectedly small image")
+          PY
