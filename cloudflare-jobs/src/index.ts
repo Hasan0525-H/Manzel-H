@@ -36,6 +36,16 @@ type JobRecord = {
 
 type RenderMessage = { jobId: string };
 
+const MAX_UPLOAD_BYTES = 18 * 1024 * 1024;
+const SUPPORTED_UPLOAD_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/bmp",
+  "image/tiff",
+]);
+
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
@@ -69,11 +79,25 @@ async function writeJob(env: Env, job: JobRecord): Promise<void> {
   });
 }
 
+function isSupportedUpload(file: File): boolean {
+  const contentType = file.type.trim().toLowerCase();
+  if (SUPPORTED_UPLOAD_MIME_TYPES.has(contentType)) return true;
+
+  const filename = file.name.trim().toLowerCase();
+  return /\.(pdf|png|jpe?g|webp|bmp|tiff?)$/.test(filename);
+}
+
+function normalizeFloors(value: FormDataEntryValue | null): number {
+  const parsed = Number(value ?? 1);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.min(4, Math.round(parsed)));
+}
+
 function normalizeOptions(form: FormData): RenderOptions {
   const furnishing = String(form.get("furnishing") || "full");
   const entrance = String(form.get("entrance") || "formal");
   return {
-    floors: Math.max(1, Math.min(4, Number(form.get("floors") || 1))),
+    floors: normalizeFloors(form.get("floors")),
     furnishing: furnishing === "none" ? "none" : furnishing === "light" ? "light" : "full",
     style: String(form.get("style") || "سعودي حديث"),
     garden: String(form.get("garden") ?? "true") === "true",
@@ -92,7 +116,10 @@ async function createJob(request: Request, env: Env): Promise<Response> {
   if (kind !== "interior" && kind !== "exterior") {
     return json({ error: "invalid_kind" }, 400);
   }
-  if (file.size <= 0 || file.size > 18 * 1024 * 1024) {
+  if (!isSupportedUpload(file)) {
+    return json({ error: "unsupported_file_type" }, 415);
+  }
+  if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) {
     return json({ error: "invalid_file_size" }, 413);
   }
 
@@ -245,10 +272,25 @@ async function prepareReferences(
   form.append("file", new File([bytes], job.filename, { type: job.contentType }));
 
   const base = env.RENDER_BACKEND_URL.replace(/\/$/, "");
-  const response = await fetch(`${base}/prepare-references`, {
-    method: "POST",
-    body: form,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90_000);
+
+  let response: Response;
+  try {
+    response = await fetch(`${base}/prepare-references`, {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("prepare_references_timeout");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 220);
     throw new Error(`prepare_references_${response.status}_${detail}`);
@@ -296,7 +338,7 @@ async function renderWithWorkersAi(
 async function processJob(message: Message<RenderMessage>, env: Env): Promise<void> {
   const id = message.body.jobId;
   const job = await readJob(env, id);
-  if (!job || job.status === "done") {
+  if (!job || job.status === "done" || job.status === "failed") {
     message.ack();
     return;
   }
