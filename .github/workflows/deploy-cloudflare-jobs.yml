@@ -61,12 +61,114 @@ jobs:
       - name: Deploy gateway
         run: npx wrangler deploy
 
-      - name: Gateway health
+      - name: Wait for ModelScope gateway propagation
         shell: bash
         run: |
-          STATUS="$(curl -sS -o /tmp/health.json -w '%{http_code}' \
-            'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/health')"
-          cat /tmp/health.json
-          test "$STATUS" = "200"
-          grep -q '"provider":"modelscope-api-inference"' /tmp/health.json
-          grep -q '"configured":true' /tmp/health.json
+          for attempt in {1..18}; do
+            STATUS="$(curl -sS -o /tmp/health.json -w '%{http_code}' \
+              'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/health' || true)"
+            echo "attempt=$attempt status=$STATUS"
+            cat /tmp/health.json 2>/dev/null || true
+            if [ "$STATUS" = "200" ] \
+              && grep -q '"provider":"modelscope-api-inference"' /tmp/health.json \
+              && grep -q '"configured":true' /tmp/health.json \
+              && grep -q '"revision":"modelscope-2511-v1"' /tmp/health.json; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "New ModelScope gateway revision did not propagate."
+          exit 1
+
+      - name: Real ModelScope image-edit smoke test
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64, json, struct, zlib
+
+          w, h = 640, 480
+          rows = []
+          for y in range(h):
+              row = bytearray()
+              for x in range(w):
+                  v = 248
+                  # exterior rectangle
+                  if 35 <= x <= 604 and (35 <= y <= 45 or 434 <= y <= 444):
+                      v = 20
+                  if 35 <= y <= 444 and (35 <= x <= 45 or 594 <= x <= 604):
+                      v = 20
+                  # interior walls with door gaps
+                  if 280 <= x <= 290 and 45 <= y <= 434 and not (200 <= y <= 250):
+                      v = 25
+                  if 45 <= x <= 594 and 220 <= y <= 230 and not (120 <= x <= 180):
+                      v = 25
+                  # faint drafting grid so PNG is not trivially tiny
+                  if x % 53 == 0 or y % 47 == 0:
+                      v = min(v, 225)
+                  row.extend((v, v, v))
+              rows.append(b"\x00" + bytes(row))
+
+          raw = b"".join(rows)
+          def chunk(kind, data):
+              return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+
+          png = (
+              b"\x89PNG\r\n\x1a\n"
+              + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+              + chunk(b"IDAT", zlib.compress(raw, 6))
+              + chunk(b"IEND", b"")
+          )
+          print("smoke_reference_bytes", len(png))
+
+          payload = {
+              "imageBase64": base64.b64encode(png).decode("ascii"),
+              "filename": "smoke-floorplan.png",
+              "contentType": "image/png",
+              "kind": "exterior",
+              "floors": 1,
+              "furnishing": "light",
+              "style": "سعودي حديث",
+              "garden": True,
+              "parking": True,
+              "fence": True,
+              "entrance": "formal"
+          }
+          with open("/tmp/modelscope-smoke.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f, ensure_ascii=False)
+          PY
+
+          CODE="$(curl -sS --max-time 300 \
+            -o /tmp/modelscope-result.json \
+            -w '%{http_code}' \
+            -X POST 'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/render-json' \
+            -H 'content-type: application/json' \
+            --data-binary @/tmp/modelscope-smoke.json || true)"
+
+          echo "modelscope_render_http=$CODE"
+          python - <<'PY'
+          import base64, json, os, sys
+
+          path = "/tmp/modelscope-result.json"
+          if not os.path.exists(path):
+              raise SystemExit("No render response was written")
+          text = open(path, "r", encoding="utf-8").read()
+          print(text[:1200])
+          if os.environ.get("CODE_FOR_PY") == "x":
+              pass
+          try:
+              data = json.loads(text)
+          except Exception as exc:
+              raise SystemExit(f"Render response is not JSON: {exc}")
+          image = data.get("imageBase64", "")
+          if not image:
+              raise SystemExit(f"No imageBase64 in response: {data}")
+          raw = base64.b64decode(image)
+          print("modelscope_result_bytes", len(raw))
+          print("modelscope_engine", data.get("engine"))
+          if len(raw) < 10000:
+              raise SystemExit("Generated image is unexpectedly small")
+          if data.get("engine") != "modelscope-qwen-image-edit-2511":
+              raise SystemExit("Unexpected rendering engine")
+          PY
+
+          test "$CODE" = "200"

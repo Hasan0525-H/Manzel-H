@@ -601,6 +601,7 @@ export default {
         renderModel: MODEL_RENDER,
         analysisModel: MODEL_VISION,
         configured: Boolean(env.MODELSCOPE_TOKEN?.trim()),
+        revision: "modelscope-2511-v1",
       });
     }
 
