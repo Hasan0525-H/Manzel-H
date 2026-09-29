@@ -1,3 +1,4 @@
+import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import type { Opening, Room, Wall } from "./types";
 
 const CLOUD_HOUSE_URL = "https://manzel-h-studio-v142.onrender.com";
@@ -120,34 +121,76 @@ export function isBrowserImagePlan(file: Pick<File, "name" | "type">): boolean {
   return /\.(png|jpe?g|webp)$/i.test(file.name.trim());
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToBlobUrl(value: string, mime = "image/png"): string {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: mime }));
+}
+
 async function renderPlanDirect(
   kind: "interior" | "exterior",
   file: File,
   options: DesignOptions,
 ): Promise<string> {
-  const body = new FormData();
-  body.append("file", file, file.name || "floorplan.jpg");
-  body.append("kind", kind);
-  body.append("floors", String(options.floors));
-  body.append("furnishing", options.furnishing);
-  body.append("style", options.style);
-  body.append("garden", String(options.garden));
-  body.append("parking", String(options.parking));
-  body.append("fence", String(options.fence));
-  body.append("entrance", options.entrance);
+  const raw = new Uint8Array(await file.arrayBuffer());
+  const payload = {
+    imageBase64: bytesToBase64(raw),
+    filename: file.name || "floorplan.jpg",
+    contentType: file.type || "application/octet-stream",
+    kind,
+    floors: options.floors,
+    furnishing: options.furnishing,
+    style: options.style,
+    garden: options.garden,
+    parking: options.parking,
+    fence: options.fence,
+    entrance: options.entrance,
+  };
 
-  const response = await fetchWithTimeout(
-    `${jobApiBase()}/render`,
-    { method: "POST", body },
-    180_000,
-  );
-  if (!response.ok) {
-    throw new Error(`Direct render HTTP ${response.status}`);
+  if (Capacitor.isNativePlatform()) {
+    const response = await CapacitorHttp.request({
+      url: `${jobApiBase()}/render-json`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      data: payload,
+      responseType: "json",
+      connectTimeout: 30_000,
+      readTimeout: 300_000,
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`Native render HTTP ${response.status}`);
+    }
+
+    const data = response.data as { imageBase64?: string; mime?: string; error?: string };
+    if (!data?.imageBase64) throw new Error(data?.error || "Native render returned no image");
+    return base64ToBlobUrl(data.imageBase64, data.mime || "image/png");
   }
 
-  const blob = await response.blob();
-  if (blob.size < 1_000) throw new Error("Empty direct render");
-  return URL.createObjectURL(blob);
+  const response = await fetchWithTimeout(
+    `${jobApiBase()}/render-json`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    },
+    300_000,
+  );
+  if (!response.ok) throw new Error(`Direct render HTTP ${response.status}`);
+  const data = await response.json() as { imageBase64?: string; mime?: string; error?: string };
+  if (!data.imageBase64) throw new Error(data.error || "Direct render returned no image");
+  return base64ToBlobUrl(data.imageBase64, data.mime || "image/png");
 }
 
 async function fetchWithTimeout(

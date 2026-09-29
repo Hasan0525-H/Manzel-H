@@ -292,6 +292,15 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
+function bytesToBase64(value: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < value.length; offset += chunkSize) {
+    binary += String.fromCharCode(...value.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
 function bytesFromAiResult(result: unknown): Uint8Array {
   if (result && typeof result === "object" && "image" in result) {
     const image = (result as { image?: unknown }).image;
@@ -460,6 +469,61 @@ async function renderWithWorkersAi(
   }
 }
 
+async function renderJson(request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as {
+    imageBase64?: string;
+    filename?: string;
+    contentType?: string;
+    kind?: string;
+    floors?: number;
+    furnishing?: string;
+    style?: string;
+    garden?: boolean;
+    parking?: boolean;
+    fence?: boolean;
+    entrance?: string;
+  };
+
+  const kind = String(body.kind || "");
+  if (kind !== "interior" && kind !== "exterior") return json({ error: "invalid_kind" }, 400);
+  if (!body.imageBase64 || typeof body.imageBase64 !== "string") {
+    return json({ error: "image_required" }, 400);
+  }
+
+  let raw: Uint8Array;
+  try {
+    raw = base64ToBytes(body.imageBase64);
+  } catch {
+    return json({ error: "invalid_base64" }, 400);
+  }
+  if (raw.byteLength <= 1_000 || raw.byteLength > MAX_UPLOAD_BYTES) {
+    return json({ error: "invalid_file_size" }, 413);
+  }
+
+  const filename = String(body.filename || "floorplan.jpg");
+  const contentType = String(body.contentType || "application/octet-stream");
+  const file = new File([raw.slice().buffer as ArrayBuffer], filename, { type: contentType });
+  if (!isDirectImageUpload(file)) return json({ error: "image_required" }, 415);
+
+  const form = new FormData();
+  form.set("floors", String(body.floors ?? 1));
+  form.set("furnishing", String(body.furnishing ?? "full"));
+  form.set("style", String(body.style || "سعودي حديث"));
+  form.set("garden", String(body.garden ?? true));
+  form.set("parking", String(body.parking ?? true));
+  form.set("fence", String(body.fence ?? true));
+  form.set("entrance", String(body.entrance || "formal"));
+
+  const reference = await normalizeImageForAi(file, env);
+  const image = await renderWithWorkersAi(kind, [reference], normalizeOptions(form), env);
+  if (image.byteLength < 10_000) return json({ error: "result_too_small" }, 502);
+
+  return json({
+    imageBase64: bytesToBase64(image),
+    mime: "image/png",
+  });
+}
+
 async function renderDirect(request: Request, env: Env): Promise<Response> {
   const form = await request.formData();
   const file = form.get("file");
@@ -553,6 +617,17 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true, mode: "cloudflare-direct-server-normalized", primary: "flux-2-klein-4b", emergency: "flux-1-schnell", preprocessing: "cloudflare-images" });
+    }
+
+    if (request.method === "POST" && url.pathname === "/render-json") {
+      try {
+        return await renderJson(request, env);
+      } catch (error) {
+        return json({
+          error: "render_failed",
+          detail: error instanceof Error ? error.message.slice(0, 300) : "unknown_error",
+        }, 503);
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/render") {
