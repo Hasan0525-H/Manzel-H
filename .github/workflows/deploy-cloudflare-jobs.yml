@@ -52,3 +52,48 @@ jobs:
       - name: Deploy Worker
         if: steps.cloudflare.outputs.configured == 'true'
         run: npx wrangler deploy
+
+      - name: Runtime smoke test
+        if: steps.cloudflare.outputs.configured == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import struct, zlib
+          w = h = 480
+          rows = []
+          for y in range(h):
+              row = bytearray()
+              for x in range(w):
+                  base = 245 - ((x + y) % 17)
+                  if x in range(40, 46) or x in range(210, 218) or x in range(432, 439) or y in range(45, 52) or y in range(220, 227) or y in range(425, 433):
+                      r = g = b = 24
+                  else:
+                      r = g = b = base
+                  row.extend((r, g, b))
+              rows.append(b"\x00" + bytes(row))
+          raw = b"".join(rows)
+          def chunk(t, d):
+              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+          png = b"\x89PNG\r\n\x1a\n"
+          png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+          png += chunk(b"IDAT", zlib.compress(raw, 6))
+          png += chunk(b"IEND", b"")
+          open("/tmp/manzel-smoke.png", "wb").write(png)
+          print("smoke_png_bytes", len(png))
+          PY
+
+          CODE="$(curl -sS -o /tmp/render-response.bin -w '%{http_code}'             -X POST 'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/render'             -F 'reference=@/tmp/manzel-smoke.png;type=image/png'             -F 'kind=exterior'             -F 'floors=1'             -F 'furnishing=light'             -F 'style=سعودي حديث'             -F 'garden=true'             -F 'parking=true'             -F 'fence=true'             -F 'entrance=formal')"
+
+          echo "runtime_http=$CODE"
+          if [ "$CODE" != "200" ]; then
+            echo "Runtime render failed:"
+            cat /tmp/render-response.bin
+            exit 1
+          fi
+
+          BYTES="$(wc -c < /tmp/render-response.bin)"
+          echo "runtime_image_bytes=$BYTES"
+          if [ "$BYTES" -lt 10000 ]; then
+            echo "Runtime render returned an unexpectedly small image."
+            exit 1
+          fi
