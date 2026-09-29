@@ -5,6 +5,30 @@ type Phase = "upload" | "setup" | "analyzing" | "building" | "result";
 type ResultTab = "interior" | "exterior";
 
 const DEFAULT_SCALE = 0.02;
+const MAX_UPLOAD_BYTES = 18 * 1024 * 1024;
+const SUPPORTED_PLAN_TYPES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/bmp",
+  "image/tiff",
+]);
+
+function validatePlanFile(file: File): string | null {
+  if (file.size <= 0) return "الملف فارغ.";
+  if (file.size > MAX_UPLOAD_BYTES) return "حجم الملف أكبر من 18 ميجابايت.";
+
+  const type = file.type.trim().toLowerCase();
+  const name = file.name.trim().toLowerCase();
+  const supportedByType = SUPPORTED_PLAN_TYPES.has(type);
+  const supportedByName = /\.(pdf|png|jpe?g|webp|bmp|tiff?)$/.test(name);
+
+  if (!supportedByType && !supportedByName) {
+    return "صيغة الملف غير مدعومة. استخدم PDF أو PNG أو JPG أو WEBP أو BMP أو TIFF.";
+  }
+  return null;
+}
 
 const defaultOptions: DesignOptions = {
   floors: 1,
@@ -70,11 +94,18 @@ export default function App() {
 
   const onFile = (file?: File) => {
     if (!file) return;
+
+    const validationError = validatePlanFile(file);
+    if (fileRef.current) fileRef.current.value = "";
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
     setError("");
     clearResults();
     setPlanFile(file);
     setPhase("setup");
-    if (fileRef.current) fileRef.current.value = "";
   };
 
   const renderWithFallback = async (kind: ResultTab): Promise<string> => {
