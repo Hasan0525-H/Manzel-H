@@ -9,7 +9,7 @@ from typing import Any
 import modal
 
 APP_NAME = "manzel-h-pipeline"
-MODEL_ID = "Qwen/Qwen-Image-Edit-2509"
+MODEL_ID = "Jiangdi/Qwen-Image-Edit-2509-4bit"
 MODEL_DIR = Path("/models/qwen-image-edit-2509")
 
 app = modal.App(APP_NAME)
@@ -152,14 +152,18 @@ def _ensure_pipeline():
         torch_dtype=torch.bfloat16,
         local_files_only=True,
     )
-    _PIPELINE.to("cuda")
+    # The NF4 build is designed for ~20 GB VRAM. L4 provides 24 GB, and
+    # CPU offload keeps peak usage below the card limit without changing
+    # the cloud-only architecture.
+    _PIPELINE.enable_model_cpu_offload()
     _PIPELINE.set_progress_bar_config(disable=True)
     return _PIPELINE
 
 
 @app.function(
     image=gpu_image,
-    gpu="A100-80GB",
+    gpu="L4",
+    memory=49152,
     volumes={"/models": model_cache},
     timeout=900,
     startup_timeout=900,
@@ -205,7 +209,7 @@ def render_qwen(payload: dict[str, Any]) -> dict[str, str]:
     return {
         "imageBase64": base64.b64encode(result).decode("ascii"),
         "mime": "image/png",
-        "engine": "modal-qwen-image-edit-2509",
+        "engine": "modal-qwen-image-edit-2509-nf4-l4",
     }
 
 
