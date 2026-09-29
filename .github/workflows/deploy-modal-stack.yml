@@ -1,137 +1,14 @@
 name: deploy-modal-stack
 
+# Retained only for manual rollback experiments.
+# Production rendering uses ModelScope API-Inference through Cloudflare.
 on:
   workflow_dispatch:
-  push:
-    branches: ["main"]
-    paths:
-      - "services/modal-pipeline/**"
-      - "cloudflare-jobs/**"
-      - ".github/workflows/deploy-modal-stack.yml"
 
 jobs:
-  deploy:
+  retired:
     runs-on: ubuntu-latest
-    env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Verify cloud credentials
-        shell: bash
-        run: |
-          test -n "$MODAL_TOKEN_ID" || (echo "Missing MODAL_TOKEN_ID" && exit 1)
-          test -n "$MODAL_TOKEN_SECRET" || (echo "Missing MODAL_TOKEN_SECRET" && exit 1)
-          test -n "$CLOUDFLARE_API_TOKEN" || (echo "Missing CLOUDFLARE_API_TOKEN" && exit 1)
-          test -n "$CLOUDFLARE_ACCOUNT_ID" || (echo "Missing CLOUDFLARE_ACCOUNT_ID" && exit 1)
-
-      - name: Install Modal
-        run: python -m pip install --upgrade "modal>=1.1,<2"
-
-      - name: Validate Modal pipeline
-        run: python -m py_compile services/modal-pipeline/modal_app.py
-
-      - name: Deploy Modal pipeline
-        id: modal
-        shell: bash
-        run: |
-          set -o pipefail
-          modal deploy services/modal-pipeline/modal_app.py 2>&1 | tee /tmp/modal-deploy.log
-          MODAL_URL="$(grep -Eo 'https://[^[:space:]]+modal\.(run|direct)' /tmp/modal-deploy.log | tail -1 | sed 's/[),]$//')"
-          if [ -z "$MODAL_URL" ]; then
-            echo "Could not determine Modal web endpoint from deployment output."
-            cat /tmp/modal-deploy.log
-            exit 1
-          fi
-          echo "url=$MODAL_URL" >> "$GITHUB_OUTPUT"
-          echo "Modal endpoint: $MODAL_URL"
-
-      - name: Verify Modal health
-        shell: bash
-        env:
-          MODAL_URL: ${{ steps.modal.outputs.url }}
-        run: |
-          for attempt in {1..12}; do
-            STATUS="$(curl -sS -o /tmp/modal-health.json -w '%{http_code}' "$MODAL_URL/health" || true)"
-            cat /tmp/modal-health.json 2>/dev/null || true
-            if [ "$STATUS" = "200" ]; then
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "Modal health check failed."
-          exit 1
-
-      - name: Install Cloudflare worker dependencies
-        working-directory: cloudflare-jobs
-        run: npm install
-
-      - name: Type-check Cloudflare gateway
-        working-directory: cloudflare-jobs
-        run: npx tsc --noEmit
-
-      - name: Ensure cloud resources exist
-        working-directory: cloudflare-jobs
-        run: |
-          npx wrangler queues create manzel-h-render-jobs || true
-          npx wrangler queues create manzel-h-render-dead || true
-          npx wrangler r2 bucket create manzel-h-jobs || true
-
-      - name: Deploy Cloudflare gateway to Modal
-        working-directory: cloudflare-jobs
-        env:
-          MODAL_URL: ${{ steps.modal.outputs.url }}
-        run: npx wrangler deploy --var "MODAL_PIPELINE_URL:$MODAL_URL"
-
-      - name: Verify end-to-end gateway health
-        shell: bash
-        run: |
-          for attempt in {1..12}; do
-            STATUS="$(curl -sS -o /tmp/gateway-health.json -w '%{http_code}'               'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/health' || true)"
-            cat /tmp/gateway-health.json 2>/dev/null || true
-            if [ "$STATUS" = "200" ] && grep -q '"pipeline":"modal"' /tmp/gateway-health.json; then
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "Gateway did not connect to Modal."
-          exit 1
-
-      - name: Analyze smoke test
-        shell: bash
-        run: |
-          python - <<'PY'
-          from PIL import Image, ImageDraw
-          import base64, io, json
-
-          image = Image.new("RGB", (640, 480), "white")
-          d = ImageDraw.Draw(image)
-          for rect in [(40,40,600,50),(40,430,600,440),(40,40,50,440),(590,40,600,440),(260,40,270,440)]:
-              d.rectangle(rect, fill="black")
-          buf = io.BytesIO()
-          image.save(buf, "PNG")
-          raw = buf.getvalue()
-          payload = {
-              "imageBase64": base64.b64encode(raw).decode("ascii"),
-              "filename": "smoke-plan.png",
-              "contentType": "image/png"
-          }
-          open("/tmp/analyze-payload.json","w").write(json.dumps(payload))
-          PY
-
-          STATUS="$(curl -sS -o /tmp/analyze.json -w '%{http_code}'             -X POST 'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/analyze-json'             -H 'content-type: application/json'             --data-binary @/tmp/analyze-payload.json)"
-          cat /tmp/analyze.json
-          test "$STATUS" = "200"
-          grep -q '"engine":"modal-opencv-v1"' /tmp/analyze.json
+      - run: |
+          echo "Modal GPU deployment is retired for production."
+          echo "The production path is Cloudflare -> ModelScope API-Inference."

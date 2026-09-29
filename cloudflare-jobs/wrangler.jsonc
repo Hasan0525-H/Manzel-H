@@ -22,12 +22,12 @@
         "queue": "manzel-h-render-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 1,
-        "max_retries": 3,
+        "max_retries": 2,
         "dead_letter_queue": "manzel-h-render-dead"
       }
     ]
   },
   "vars": {
-    "MODAL_PIPELINE_URL": ""
+    "GATEWAY_ORIGIN": "https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev"
   }
 }

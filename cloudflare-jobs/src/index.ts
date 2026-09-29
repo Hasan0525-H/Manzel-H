@@ -1,7 +1,8 @@
 interface Env {
   JOBS: R2Bucket;
   RENDER_QUEUE: Queue<RenderMessage>;
-  MODAL_PIPELINE_URL?: string;
+  MODELSCOPE_TOKEN?: string;
+  GATEWAY_ORIGIN?: string;
 }
 
 type RenderKind = "interior" | "exterior";
@@ -17,6 +18,7 @@ type RenderOptions = {
 };
 
 type JobStatus = "queued" | "processing" | "done" | "failed";
+type RenderMessage = { jobId: string };
 
 type JobRecord = {
   id: string;
@@ -33,11 +35,19 @@ type JobRecord = {
   updatedAt: string;
 };
 
-type RenderMessage = { jobId: string };
+type RenderPayload = Partial<RenderOptions> & {
+  imageBase64?: string;
+  filename?: string;
+  contentType?: string;
+  kind?: RenderKind | string;
+};
 
-const MAX_UPLOAD_BYTES = 18 * 1024 * 1024;
-const SUPPORTED_UPLOAD_MIME_TYPES = new Set([
-  "application/pdf",
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MODEL_RENDER = "Qwen/Qwen-Image-Edit-2511";
+const MODEL_VISION = "Qwen/Qwen2.5-VL-72B-Instruct";
+const MODELSCOPE_BASE = "https://api-inference.modelscope.cn";
+
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/jpeg",
   "image/webp",
@@ -61,10 +71,27 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function modalBase(env: Env): string {
-  const base = env.MODAL_PIPELINE_URL?.trim().replace(/\/$/, "");
-  if (!base) throw new Error("modal_pipeline_not_configured");
-  return base;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function modelScopeToken(env: Env): string {
+  const token = env.MODELSCOPE_TOKEN?.trim();
+  if (!token) throw new Error("modelscope_token_not_configured");
+  return token;
+}
+
+function modelScopeHeaders(env: Env, asyncMode = false): Headers {
+  const headers = new Headers({
+    authorization: `Bearer ${modelScopeToken(env)}`,
+    "content-type": "application/json",
+  });
+  if (asyncMode) headers.set("X-ModelScope-Async-Mode", "true");
+  return headers;
+}
+
+function gatewayOrigin(env: Env): string {
+  return (env.GATEWAY_ORIGIN || "https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev").replace(/\/$/, "");
 }
 
 function jobKey(id: string): string {
@@ -84,30 +111,11 @@ async function writeJob(env: Env, job: JobRecord): Promise<void> {
   });
 }
 
-function isSupportedUpload(file: File): boolean {
-  const contentType = file.type.trim().toLowerCase();
-  if (SUPPORTED_UPLOAD_MIME_TYPES.has(contentType)) return true;
-  return /\.(pdf|png|jpe?g|webp|bmp|tiff?)$/i.test(file.name.trim());
-}
-
-function normalizeFloors(value: FormDataEntryValue | null): number {
-  const parsed = Number(value ?? 1);
-  if (!Number.isFinite(parsed)) return 1;
-  return Math.max(1, Math.min(4, Math.round(parsed)));
-}
-
-function normalizeOptions(form: FormData): RenderOptions {
-  const furnishing = String(form.get("furnishing") || "full");
-  const entrance = String(form.get("entrance") || "formal");
-  return {
-    floors: normalizeFloors(form.get("floors")),
-    furnishing: furnishing === "none" ? "none" : furnishing === "light" ? "light" : "full",
-    style: String(form.get("style") || "سعودي حديث"),
-    garden: String(form.get("garden") ?? "true") === "true",
-    parking: String(form.get("parking") ?? "true") === "true",
-    fence: String(form.get("fence") ?? "true") === "true",
-    entrance: entrance === "simple" ? "simple" : "formal",
-  };
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 function bytesToBase64(value: Uint8Array): string {
@@ -119,56 +127,350 @@ function bytesToBase64(value: Uint8Array): string {
   return btoa(binary);
 }
 
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+function normalizeContentType(contentType: string | undefined, filename: string): string {
+  const type = String(contentType || "").trim().toLowerCase();
+  if (SUPPORTED_IMAGE_MIME_TYPES.has(type)) return type;
+  const lower = filename.toLowerCase();
+  if (/\.png$/.test(lower)) return "image/png";
+  if (/\.webp$/.test(lower)) return "image/webp";
+  if (/\.bmp$/.test(lower)) return "image/bmp";
+  if (/\.tiff?$/.test(lower)) return "image/tiff";
+  return "image/jpeg";
 }
 
-async function callModal(
-  env: Env,
-  path: "/health" | "/render" | "/analyze",
-  init: RequestInit = {},
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), path === "/render" ? 780_000 : 120_000);
+function normalizeOptionsFromPayload(payload: RenderPayload): RenderOptions {
+  const floorsRaw = Number(payload.floors ?? 1);
+  const floors = Number.isFinite(floorsRaw) ? Math.max(1, Math.min(4, Math.round(floorsRaw))) : 1;
+  const furnishing = payload.furnishing === "none" ? "none" : payload.furnishing === "light" ? "light" : "full";
+  const entrance = payload.entrance === "simple" ? "simple" : "formal";
+  return {
+    floors,
+    furnishing,
+    style: String(payload.style || "سعودي حديث"),
+    garden: payload.garden !== false,
+    parking: payload.parking !== false,
+    fence: payload.fence !== false,
+    entrance,
+  };
+}
+
+function normalizeOptions(form: FormData): RenderOptions {
+  return normalizeOptionsFromPayload({
+    floors: Number(form.get("floors") || 1),
+    furnishing: String(form.get("furnishing") || "full") as RenderOptions["furnishing"],
+    style: String(form.get("style") || "سعودي حديث"),
+    garden: String(form.get("garden") ?? "true") === "true",
+    parking: String(form.get("parking") ?? "true") === "true",
+    fence: String(form.get("fence") ?? "true") === "true",
+    entrance: String(form.get("entrance") || "formal") as RenderOptions["entrance"],
+  });
+}
+
+function architecturalPrompt(kind: RenderKind, options: RenderOptions): string {
+  const floorRule = options.floors === 1
+    ? "EXACTLY one storey. Keep a low horizontal single-storey villa silhouette with no upper floor."
+    : `EXACTLY ${options.floors} storeys, no more and no fewer.`;
+
+  const styleRules: Record<string, string> = {
+    "سعودي حديث": "Contemporary Saudi villa, privacy-first facade, warm Riyadh/Najdi limestone, warm off-white plaster, dark bronze or wood accents, deep shade, climate-appropriate details.",
+    "نجدي حديث": "Modern Najdi Saudi architecture, simple earth-toned masses, Najdi limestone, sand plaster, deep-set openings and restrained geometric privacy screens.",
+    "حجازي حديث": "Modern Hijazi Saudi architecture with refined contemporary rawasheen-inspired screens, warm light stone, plaster, deep reveals and privacy.",
+    "مودرن فاخر": "Restrained luxury contemporary villa, premium stone, warm plaster, bronze and wood accents, strong horizontal proportions and architectural lighting.",
+  };
+
+  const common = [
+    "Use the supplied architectural floor plan as the authoritative geometry.",
+    "Preserve footprint, proportions, room adjacency, circulation logic, wall positions, openings and orientation.",
+    "Do not mirror, rotate, stretch, merge rooms, delete rooms or invent structural walls.",
+    floorRule,
+    styleRules[options.style] || `Architectural style: ${options.style}.`,
+    "Saudi residential scale. Photorealistic professional architectural visualization. No text. No watermark.",
+  ];
+
+  if (kind === "interior") {
+    const furnishing = options.furnishing === "none"
+      ? "Completely unfurnished; architecture and finishes only."
+      : options.furnishing === "light"
+        ? "Light furnishing only; essential furniture with generous empty space."
+        : "Fully furnished with coherent premium contemporary furniture.";
+    return [...common,
+      furnishing,
+      "Transform the plan into a realistic isometric cutaway / dollhouse interior visualization.",
+      "The original plan must remain traceable one-to-one in the result."
+    ].join(" ");
+  }
+
+  const site = [
+    options.garden ? "Include a landscaped Saudi-climate garden." : "No garden.",
+    options.parking ? "Include clearly usable residential parking." : "No parking, garage or carport.",
+    options.fence ? "Include a privacy boundary wall." : "No boundary wall.",
+    options.entrance === "formal" ? "Use a prominent formal entrance." : "Use a simple understated entrance.",
+  ].join(" ");
+
+  return [...common,
+    site,
+    "Transform the plan into one straight-on eye-level photorealistic villa exterior.",
+    "Keep straight verticals, realistic daylight and physically plausible materials.",
+    "The requested storey count must be visually unmistakable."
+  ].join(" ");
+}
+
+function decodeRenderPayload(payload: RenderPayload): {
+  bytes: Uint8Array;
+  filename: string;
+  contentType: string;
+  kind: RenderKind;
+  options: RenderOptions;
+} {
+  if (!payload.imageBase64 || typeof payload.imageBase64 !== "string") {
+    throw new Error("image_required");
+  }
+  const kind = String(payload.kind || "");
+  if (kind !== "interior" && kind !== "exterior") throw new Error("invalid_kind");
+
+  let bytes: Uint8Array;
   try {
-    return await fetch(`${modalBase(env)}${path}`, {
-      ...init,
-      signal: controller.signal,
+    bytes = base64ToBytes(payload.imageBase64);
+  } catch {
+    throw new Error("invalid_base64");
+  }
+  if (bytes.byteLength < 1000 || bytes.byteLength > MAX_UPLOAD_BYTES) {
+    throw new Error("invalid_image_size");
+  }
+
+  const filename = String(payload.filename || "floorplan.jpg");
+  const contentType = normalizeContentType(payload.contentType, filename);
+  return {
+    bytes,
+    filename,
+    contentType,
+    kind,
+    options: normalizeOptionsFromPayload(payload),
+  };
+}
+
+async function putTemporaryReference(
+  bytes: Uint8Array,
+  contentType: string,
+  env: Env,
+): Promise<{ id: string; key: string; url: string }> {
+  const id = crypto.randomUUID();
+  const key = `references/${id}`;
+  await env.JOBS.put(key, bytes, {
+    httpMetadata: { contentType },
+    customMetadata: { expires: String(Date.now() + 15 * 60 * 1000) },
+  });
+  return { id, key, url: `${gatewayOrigin(env)}/references/${id}` };
+}
+
+async function fetchReference(id: string, env: Env): Promise<Response> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return new Response("not found", { status: 404 });
+  const obj = await env.JOBS.get(`references/${id}`);
+  if (!obj) return new Response("not found", { status: 404 });
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set("cache-control", "no-store");
+  headers.set("x-content-type-options", "nosniff");
+  return new Response(obj.body, { headers });
+}
+
+type ModelScopeTask = {
+  task_id?: string;
+  task_status?: string;
+  output_images?: Array<string | { url?: string }>;
+  message?: string;
+  error?: string;
+};
+
+async function modelScopeRender(
+  bytes: Uint8Array,
+  contentType: string,
+  kind: RenderKind,
+  options: RenderOptions,
+  env: Env,
+): Promise<{ image: Uint8Array; mime: string }> {
+  const reference = await putTemporaryReference(bytes, contentType, env);
+  try {
+    const create = await fetch(`${MODELSCOPE_BASE}/v1/images/generations`, {
+      method: "POST",
+      headers: modelScopeHeaders(env, true),
+      body: JSON.stringify({
+        model: MODEL_RENDER,
+        prompt: architecturalPrompt(kind, options),
+        image_url: [reference.url],
+      }),
     });
+
+    if (!create.ok) {
+      const detail = (await create.text()).slice(0, 500);
+      throw new Error(`modelscope_create_${create.status}_${detail}`);
+    }
+
+    const created = await create.json() as ModelScopeTask;
+    if (!created.task_id) throw new Error("modelscope_missing_task_id");
+
+    const deadline = Date.now() + 4 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await sleep(7000);
+      const status = await fetch(
+        `${MODELSCOPE_BASE}/v1/tasks/${encodeURIComponent(created.task_id)}`,
+        {
+          headers: (() => {
+            const h = modelScopeHeaders(env);
+            h.set("X-ModelScope-Task-Type", "image_generation");
+            return h;
+          })(),
+        },
+      );
+
+      if (!status.ok) {
+        const detail = (await status.text()).slice(0, 500);
+        throw new Error(`modelscope_status_${status.status}_${detail}`);
+      }
+
+      const task = await status.json() as ModelScopeTask;
+      if (task.task_status === "FAILED") {
+        throw new Error(`modelscope_failed_${task.message || task.error || "unknown"}`);
+      }
+      if (task.task_status !== "SUCCEED") continue;
+
+      const first = task.output_images?.[0];
+      const outputUrl = typeof first === "string" ? first : first?.url;
+      if (!outputUrl) throw new Error("modelscope_missing_output_url");
+
+      const output = await fetch(outputUrl);
+      if (!output.ok) throw new Error(`modelscope_output_${output.status}`);
+      const image = new Uint8Array(await output.arrayBuffer());
+      if (image.byteLength < 10_000) throw new Error("modelscope_result_too_small");
+      return {
+        image,
+        mime: output.headers.get("content-type") || "image/png",
+      };
+    }
+
+    throw new Error("modelscope_render_timeout");
   } finally {
-    clearTimeout(timeout);
+    await env.JOBS.delete(reference.key);
   }
 }
 
-async function forwardJson(request: Request, env: Env, path: "/render" | "/analyze"): Promise<Response> {
-  let payload: unknown;
+async function modelScopeAnalyze(payload: RenderPayload, env: Env): Promise<unknown> {
+  if (!payload.imageBase64) throw new Error("image_required");
+  const bytes = base64ToBytes(payload.imageBase64);
+  if (bytes.byteLength < 1000 || bytes.byteLength > MAX_UPLOAD_BYTES) {
+    throw new Error("invalid_image_size");
+  }
+  const filename = String(payload.filename || "floorplan.jpg");
+  const contentType = normalizeContentType(payload.contentType, filename);
+  const reference = await putTemporaryReference(bytes, contentType, env);
+
   try {
-    payload = await request.json();
+    const prompt = [
+      "Analyze this architectural floor plan carefully.",
+      "Return JSON only, no markdown.",
+      "Extract: visible room names, dimension labels, likely doors, likely windows, stairs, columns, exterior boundary,",
+      "and a concise description of room adjacency and circulation.",
+      "Do not invent measurements that are not visible.",
+      'Schema: {"rooms":[{"name":"","dimensions":[],"adjacent":[]}],"doors":[],"windows":[],"stairs":[],"columns":[],"notes":[]}',
+    ].join(" ");
+
+    const response = await fetch(`${MODELSCOPE_BASE}/v1/chat/completions`, {
+      method: "POST",
+      headers: modelScopeHeaders(env),
+      body: JSON.stringify({
+        model: MODEL_VISION,
+        temperature: 0.1,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: reference.url } },
+            { type: "text", text: prompt },
+          ],
+        }],
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 500);
+      throw new Error(`modelscope_analyze_${response.status}_${detail}`);
+    }
+
+    const data = await response.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = data.choices?.[0]?.message?.content || "";
+    let parsed: unknown = null;
+    try {
+      const cleaned = content.replace(/^\s*```(?:json)?/i, "").replace(/```\s*$/, "").trim();
+      parsed = JSON.parse(cleaned);
+    } catch {
+      parsed = null;
+    }
+    return {
+      engine: "modelscope-qwen-vl-72b",
+      model: MODEL_VISION,
+      parsed,
+      raw: content,
+    };
+  } finally {
+    await env.JOBS.delete(reference.key);
+  }
+}
+
+async function renderJson(request: Request, env: Env): Promise<Response> {
+  let payload: RenderPayload;
+  try {
+    payload = await request.json() as RenderPayload;
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
 
-  let response: Response;
   try {
-    response = await callModal(env, path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
+    const decoded = decodeRenderPayload(payload);
+    const result = await modelScopeRender(
+      decoded.bytes,
+      decoded.contentType,
+      decoded.kind,
+      decoded.options,
+      env,
+    );
+    return json({
+      imageBase64: bytesToBase64(result.image),
+      mime: result.mime,
+      engine: "modelscope-qwen-image-edit-2511",
     });
   } catch (error) {
-    return json({
-      error: "pipeline_unavailable",
-      detail: error instanceof Error ? error.message : "unknown_error",
-    }, 503);
+    const message = error instanceof Error ? error.message : "unknown_error";
+    const status =
+      message === "image_required" || message === "invalid_base64" || message === "invalid_kind" || message === "invalid_image_size"
+        ? 400
+        : message === "modelscope_token_not_configured"
+          ? 503
+          : 502;
+    return json({ error: "render_failed", detail: message.slice(0, 600) }, status);
   }
+}
 
-  const body = await response.text();
-  const headers = new Headers(jsonHeaders);
-  headers.set("x-manzel-pipeline", "modal");
-  return new Response(body, { status: response.status, headers });
+async function analyzeJson(request: Request, env: Env): Promise<Response> {
+  let payload: RenderPayload;
+  try {
+    payload = await request.json() as RenderPayload;
+  } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+  try {
+    return json(await modelScopeAnalyze(payload, env));
+  } catch (error) {
+    return json({
+      error: "analyze_failed",
+      detail: error instanceof Error ? error.message.slice(0, 600) : "unknown_error",
+    }, 502);
+  }
+}
+
+function isSupportedUpload(file: File): boolean {
+  const type = normalizeContentType(file.type, file.name);
+  return SUPPORTED_IMAGE_MIME_TYPES.has(type);
 }
 
 async function createJob(request: Request, env: Env): Promise<Response> {
@@ -178,7 +480,7 @@ async function createJob(request: Request, env: Env): Promise<Response> {
 
   if (!(file instanceof File)) return json({ error: "file_required" }, 400);
   if (kind !== "interior" && kind !== "exterior") return json({ error: "invalid_kind" }, 400);
-  if (!isSupportedUpload(file)) return json({ error: "unsupported_file_type" }, 415);
+  if (!isSupportedUpload(file)) return json({ error: "image_required" }, 415);
   if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) return json({ error: "invalid_file_size" }, 413);
 
   const id = crypto.randomUUID();
@@ -186,7 +488,7 @@ async function createJob(request: Request, env: Env): Promise<Response> {
   const createdAt = now();
 
   await env.JOBS.put(inputKey, file.stream(), {
-    httpMetadata: { contentType: file.type || "application/octet-stream" },
+    httpMetadata: { contentType: normalizeContentType(file.type, file.name) },
     customMetadata: { filename: file.name || "floorplan" },
   });
 
@@ -195,14 +497,13 @@ async function createJob(request: Request, env: Env): Promise<Response> {
     kind,
     status: "queued",
     filename: file.name || "floorplan",
-    contentType: file.type || "application/octet-stream",
+    contentType: normalizeContentType(file.type, file.name),
     inputKey,
     options: normalizeOptions(form),
     attempts: 0,
     createdAt,
     updatedAt: createdAt,
   };
-
   await writeJob(env, job);
   await env.RENDER_QUEUE.send({ jobId: id });
 
@@ -223,8 +524,6 @@ async function getJob(id: string, env: Env): Promise<Response> {
     status: job.status,
     attempts: job.attempts,
     error: job.error || null,
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
     resultUrl: job.status === "done" ? `/jobs/${job.id}/result` : null,
   });
 }
@@ -238,10 +537,8 @@ async function getResult(id: string, env: Env): Promise<Response> {
 
   const obj = await env.JOBS.get(job.outputKey);
   if (!obj) return json({ error: "result_missing" }, 404);
-
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
-  headers.set("content-type", "image/png");
   headers.set("cache-control", "private, max-age=86400");
   headers.set("access-control-allow-origin", "*");
   return new Response(obj.body, { headers });
@@ -263,35 +560,12 @@ async function processJob(message: Message<RenderMessage>, env: Env): Promise<vo
   try {
     const input = await env.JOBS.get(job.inputKey);
     if (!input) throw new Error("input_missing");
+    const bytes = new Uint8Array(await input.arrayBuffer());
 
-    const raw = new Uint8Array(await input.arrayBuffer());
-    const payload = {
-      imageBase64: bytesToBase64(raw),
-      filename: job.filename,
-      contentType: job.contentType,
-      kind: job.kind,
-      ...job.options,
-    };
-
-    const response = await callModal(env, "/render", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 300);
-      throw new Error(`modal_render_${response.status}_${detail}`);
-    }
-
-    const result = await response.json() as { imageBase64?: string; mime?: string };
-    if (!result.imageBase64) throw new Error("modal_render_missing_image");
-    const image = base64ToBytes(result.imageBase64);
-    if (image.byteLength < 10_000) throw new Error("modal_render_result_too_small");
-
+    const result = await modelScopeRender(bytes, job.contentType, job.kind, job.options, env);
     const outputKey = `outputs/${job.id}/${job.kind}.png`;
-    await env.JOBS.put(outputKey, image, {
-      httpMetadata: { contentType: result.mime || "image/png" },
+    await env.JOBS.put(outputKey, result.image, {
+      httpMetadata: { contentType: result.mime },
     });
 
     job.status = "done";
@@ -300,14 +574,14 @@ async function processJob(message: Message<RenderMessage>, env: Env): Promise<vo
     message.ack();
   } catch (error) {
     job.error = error instanceof Error ? error.message.slice(0, 500) : "unknown_error";
-    if (job.attempts >= 3) {
+    if (job.attempts >= 2) {
       job.status = "failed";
       await writeJob(env, job);
       message.ack();
     } else {
       job.status = "queued";
       await writeJob(env, job);
-      message.retry({ delaySeconds: Math.min(60, 10 * job.attempts) });
+      message.retry({ delaySeconds: 20 });
     }
   }
 }
@@ -320,33 +594,26 @@ export default {
     const parts = url.pathname.split("/").filter(Boolean);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      try {
-        const response = await callModal(env, "/health");
-        const pipeline = await response.json().catch(() => null);
-        return json({
-          ok: response.ok,
-          gateway: "cloudflare",
-          pipeline: "modal",
-          configured: true,
-          upstream: pipeline,
-        }, response.ok ? 200 : 503);
-      } catch (error) {
-        return json({
-          ok: false,
-          gateway: "cloudflare",
-          pipeline: "modal",
-          configured: Boolean(env.MODAL_PIPELINE_URL?.trim()),
-          error: error instanceof Error ? error.message : "unknown_error",
-        }, 503);
-      }
+      return json({
+        ok: true,
+        gateway: "cloudflare",
+        provider: "modelscope-api-inference",
+        renderModel: MODEL_RENDER,
+        analysisModel: MODEL_VISION,
+        configured: Boolean(env.MODELSCOPE_TOKEN?.trim()),
+      });
+    }
+
+    if (request.method === "GET" && parts[0] === "references" && parts[1] && parts.length === 2) {
+      return fetchReference(parts[1], env);
     }
 
     if (request.method === "POST" && url.pathname === "/render-json") {
-      return forwardJson(request, env, "/render");
+      return renderJson(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/analyze-json") {
-      return forwardJson(request, env, "/analyze");
+      return analyzeJson(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/jobs/render") {
@@ -357,12 +624,7 @@ export default {
       return getJob(parts[1], env);
     }
 
-    if (
-      request.method === "GET" &&
-      parts[0] === "jobs" &&
-      parts[1] &&
-      parts[2] === "result"
-    ) {
+    if (request.method === "GET" && parts[0] === "jobs" && parts[1] && parts[2] === "result") {
       return getResult(parts[1], env);
     }
 
