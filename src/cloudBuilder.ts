@@ -109,8 +109,19 @@ function jobApiBase(): string {
   return (configured || CLOUD_JOB_URL).replace(/\/$/, "");
 }
 
+export function isBrowserImagePlan(file: Pick<File, "name" | "type">): boolean {
+  const type = file.type.trim().toLowerCase();
+  if (type === "image/png" || type === "image/jpeg" || type === "image/webp" || type === "image/bmp") {
+    return true;
+  }
+
+  // Android document providers do not always preserve MIME metadata.
+  // The filename is therefore authoritative for formats WebView can decode.
+  return /\.(png|jpe?g|webp|bmp)$/i.test(file.name.trim());
+}
+
 async function createPlanReference(file: File): Promise<Blob | null> {
-  if (!file.type.toLowerCase().startsWith("image/")) return null;
+  if (!isBrowserImagePlan(file)) return null;
 
   return await new Promise<Blob | null>((resolve) => {
     const objectUrl = URL.createObjectURL(file);
@@ -288,7 +299,7 @@ export async function renderPlanWithRecovery(
 ): Promise<string> {
   // Image plans render synchronously on Cloudflare and no longer depend on Render.
   // PDF plans keep the queued compatibility path until they can be rasterized locally.
-  if (file.type.toLowerCase().startsWith("image/")) {
+  if (isBrowserImagePlan(file)) {
     return await renderPlanDirect(kind, file, options);
   }
   return await renderPlanViaJob(kind, file, options);
