@@ -109,6 +109,43 @@ function jobApiBase(): string {
   return (configured || CLOUD_JOB_URL).replace(/\/$/, "");
 }
 
+async function createPlanReference(file: File): Promise<Blob | null> {
+  if (!file.type.toLowerCase().startsWith("image/")) return null;
+
+  return await new Promise<Blob | null>((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+
+    const finish = (blob: Blob | null) => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(blob);
+    };
+
+    image.onerror = () => finish(null);
+    image.onload = () => {
+      try {
+        const maxSide = 480;
+        const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+        const width = Math.max(1, Math.round(image.naturalWidth * scale));
+        const height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          finish(null);
+          return;
+        }
+        context.drawImage(image, 0, 0, width, height);
+        canvas.toBlob((blob) => finish(blob), "image/png");
+      } catch {
+        finish(null);
+      }
+    };
+    image.src = objectUrl;
+  });
+}
+
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit = {},
@@ -138,6 +175,14 @@ async function createRenderJob(
   body.append("parking", String(options.parking));
   body.append("fence", String(options.fence));
   body.append("entrance", options.entrance);
+
+  // Keep the primary Workers AI path independent from the Render backend.
+  // FLUX.2 reference inputs must be below 512x512, so the app prepares a
+  // compact reference locally and uploads it alongside the original plan.
+  const reference = await createPlanReference(file);
+  if (reference) {
+    body.append("reference", reference, "plan-reference.png");
+  }
 
   const response = await fetchWithTimeout(`${jobApiBase()}/jobs/render`, {
     method: "POST",
@@ -199,4 +244,23 @@ export async function renderPlanViaJob(
   const created = await createRenderJob(kind, file, options);
   await waitForRenderJob(created.id);
   return await fetchRenderJobResult(created.id);
+}
+
+export async function renderPlanWithRecovery(
+  kind: "interior" | "exterior",
+  file: File,
+  options: DesignOptions,
+): Promise<string> {
+  try {
+    return await renderPlanViaJob(kind, file, options);
+  } catch (queuedError) {
+    try {
+      return await renderPlanInCloud(kind, file, options);
+    } catch (directError) {
+      throw new AggregateError(
+        [queuedError, directError],
+        "Queued and direct render paths both failed",
+      );
+    }
+  }
 }

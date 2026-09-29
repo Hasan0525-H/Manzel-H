@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { renderPlanViaJob, type DesignOptions } from "./cloudBuilder";
+import { renderPlanWithRecovery, type DesignOptions } from "./cloudBuilder";
 
 type Phase = "upload" | "setup" | "analyzing" | "building" | "result";
 type ResultTab = "interior" | "exterior";
@@ -109,7 +109,7 @@ export default function App() {
   };
 
   const renderWithFallback = async (kind: ResultTab): Promise<string> => {
-    return await renderPlanViaJob(kind, planFile!, options);
+    return await renderPlanWithRecovery(kind, planFile!, options);
   };
 
   const runPipeline = async () => {

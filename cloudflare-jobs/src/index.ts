@@ -26,6 +26,7 @@ type JobRecord = {
   filename: string;
   contentType: string;
   inputKey: string;
+  referenceKey?: string;
   outputKey?: string;
   options: RenderOptions;
   attempts: number;
@@ -110,6 +111,7 @@ function normalizeOptions(form: FormData): RenderOptions {
 async function createJob(request: Request, env: Env): Promise<Response> {
   const form = await request.formData();
   const file = form.get("file");
+  const reference = form.get("reference");
   const kind = String(form.get("kind") || "");
 
   if (!(file instanceof File)) return json({ error: "file_required" }, 400);
@@ -132,6 +134,19 @@ async function createJob(request: Request, env: Env): Promise<Response> {
     customMetadata: { filename: file.name || "floorplan" },
   });
 
+  let referenceKey: string | undefined;
+  if (
+    reference instanceof File &&
+    reference.size > 0 &&
+    reference.size <= 2 * 1024 * 1024 &&
+    reference.type.trim().toLowerCase() === "image/png"
+  ) {
+    referenceKey = `inputs/${id}/reference.png`;
+    await env.JOBS.put(referenceKey, reference.stream(), {
+      httpMetadata: { contentType: "image/png" },
+    });
+  }
+
   const job: JobRecord = {
     id,
     kind,
@@ -139,6 +154,7 @@ async function createJob(request: Request, env: Env): Promise<Response> {
     filename: file.name || "floorplan",
     contentType: file.type || "application/octet-stream",
     inputKey,
+    referenceKey,
     options: normalizeOptions(form),
     attempts: 0,
     createdAt,
@@ -263,12 +279,11 @@ function bytesFromAiResult(result: unknown): Uint8Array {
 }
 
 async function prepareReferences(
-  input: R2ObjectBody,
+  bytes: ArrayBuffer,
   job: JobRecord,
   env: Env,
 ): Promise<Uint8Array[]> {
   const form = new FormData();
-  const bytes = await input.arrayBuffer();
   form.append("file", new File([bytes], job.filename, { type: job.contentType }));
 
   const base = env.RENDER_BACKEND_URL.replace(/\/$/, "");
@@ -300,6 +315,63 @@ async function prepareReferences(
   const images = (data.images || []).slice(0, 4).map(base64ToBytes);
   if (!images.length) throw new Error("prepare_references_empty");
   return images;
+}
+
+async function loadReferences(
+  inputBytes: ArrayBuffer,
+  job: JobRecord,
+  env: Env,
+): Promise<Uint8Array[]> {
+  if (job.referenceKey) {
+    const reference = await env.JOBS.get(job.referenceKey);
+    if (reference) {
+      const bytes = new Uint8Array(await reference.arrayBuffer());
+      if (bytes.byteLength > 1_000) return [bytes];
+    }
+  }
+
+  return await prepareReferences(inputBytes, job, env);
+}
+
+async function renderViaBackend(
+  inputBytes: ArrayBuffer,
+  job: JobRecord,
+  env: Env,
+): Promise<Uint8Array> {
+  const form = new FormData();
+  form.append("file", new File([inputBytes], job.filename, { type: job.contentType }));
+  form.append("floors", String(job.options.floors));
+  form.append("furnishing", job.options.furnishing);
+  form.append("style", job.options.style);
+  form.append("garden", String(job.options.garden));
+  form.append("parking", String(job.options.parking));
+  form.append("fence", String(job.options.fence));
+  form.append("entrance", job.options.entrance);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 240_000);
+  try {
+    const base = env.RENDER_BACKEND_URL.replace(/\/$/, "");
+    const response = await fetch(`${base}/render-plan/${job.kind}`, {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 220);
+      throw new Error(`backend_render_${response.status}_${detail}`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength < 10_000) throw new Error("backend_result_too_small");
+    return bytes;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("backend_render_timeout");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function renderWithWorkersAi(
@@ -351,10 +423,22 @@ async function processJob(message: Message<RenderMessage>, env: Env): Promise<vo
   try {
     const input = await env.JOBS.get(job.inputKey);
     if (!input) throw new Error("input_missing");
+    const inputBytes = await input.arrayBuffer();
 
-    const references = await prepareReferences(input, job, env);
-    const image = await renderWithWorkersAi(job.kind, references, job.options, env);
-    if (image.byteLength < 10_000) throw new Error("result_too_small");
+    let image: Uint8Array;
+    try {
+      const references = await loadReferences(inputBytes, job, env);
+      image = await renderWithWorkersAi(job.kind, references, job.options, env);
+      if (image.byteLength < 10_000) throw new Error("result_too_small");
+    } catch (primaryError) {
+      try {
+        image = await renderViaBackend(inputBytes, job, env);
+      } catch (fallbackError) {
+        const primary = primaryError instanceof Error ? primaryError.message : "primary_unknown";
+        const fallback = fallbackError instanceof Error ? fallbackError.message : "fallback_unknown";
+        throw new Error(`all_render_paths_failed: ${primary}; ${fallback}`);
+      }
+    }
 
     const outputKey = `outputs/${job.id}/${job.kind}.png`;
     await env.JOBS.put(outputKey, image, {
@@ -388,7 +472,7 @@ export default {
     const parts = url.pathname.split("/").filter(Boolean);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, mode: "queue-r2", backend: env.RENDER_BACKEND_URL });
+      return json({ ok: true, mode: "queue-r2-ai-with-backend-fallback", backend: env.RENDER_BACKEND_URL });
     }
 
     if (request.method === "POST" && url.pathname === "/jobs/render") {

@@ -283,6 +283,32 @@ async def analyze(
     }
 
 
+def _render_plan_locally(image: Image.Image, kind: str, options: dict) -> bytes:
+    width, height, walls = _lightweight_geometry(image)
+    payload = {
+        "walls": walls,
+        "openings": [],
+        "rooms": [],
+        "imageSize": {"w": width, "h": height},
+        "metersPerPixel": 0.02,
+        "wallHeight": 3.2,
+        "wallThicknessM": 0.2,
+        "style": options["style"],
+        "exteriorWallIds": [],
+        "floors": options["floors"],
+        "furnishing": options["furnishing"],
+        "garden": options["garden"],
+        "parking": options["parking"],
+        "fence": options["fence"],
+        "entrance": options["entrance"],
+    }
+    return (
+        render_interior(payload, size=1536)
+        if kind == "interior"
+        else render_exterior(payload, width=1536, height=2048)
+    )
+
+
 @app.post("/render-plan/{kind}")
 async def render_plan(
     kind: str,
@@ -315,31 +341,14 @@ async def render_plan(
 
     try:
         if cloudflare_configured():
-            png = render_plan_with_cloudflare(kind, plan_png, options)
+            try:
+                png = render_plan_with_cloudflare(kind, plan_png, options)
+            except Exception:
+                # Cloud AI is an enhancement, not a single point of failure.
+                # Always return a deterministic server-rendered result if it is unavailable.
+                png = _render_plan_locally(image, kind, options)
         else:
-            width, height, walls = _lightweight_geometry(image)
-            payload = {
-                "walls": walls,
-                "openings": [],
-                "rooms": [],
-                "imageSize": {"w": width, "h": height},
-                "metersPerPixel": 0.02,
-                "wallHeight": 3.2,
-                "wallThicknessM": 0.2,
-                "style": options["style"],
-                "exteriorWallIds": [],
-                "floors": options["floors"],
-                "furnishing": options["furnishing"],
-                "garden": options["garden"],
-                "parking": options["parking"],
-                "fence": options["fence"],
-                "entrance": options["entrance"],
-            }
-            png = (
-                render_interior(payload, size=1536)
-                if kind == "interior"
-                else render_exterior(payload, width=1536, height=2048)
-            )
+            png = _render_plan_locally(image, kind, options)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
