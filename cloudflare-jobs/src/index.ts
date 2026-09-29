@@ -3,6 +3,7 @@ interface Env {
   RENDER_QUEUE: Queue<RenderMessage>;
   RENDER_BACKEND_URL: string;
   AI: Ai;
+  IMAGES: ImagesBinding;
 }
 
 type RenderKind = "interior" | "exterior";
@@ -86,6 +87,28 @@ function isSupportedUpload(file: File): boolean {
 
   const filename = file.name.trim().toLowerCase();
   return /\.(pdf|png|jpe?g|webp|bmp|tiff?)$/.test(filename);
+}
+
+function isDirectImageUpload(file: File): boolean {
+  const type = file.type.trim().toLowerCase();
+  if (type === "image/png" || type === "image/jpeg" || type === "image/webp") return true;
+  return /\.(png|jpe?g|webp)$/i.test(file.name.trim());
+}
+
+async function normalizeImageForAi(file: File, env: Env): Promise<Uint8Array> {
+  const optimized = await env.IMAGES
+    .input(file.stream())
+    .transform({ width: 480, height: 480, fit: "scale-down" })
+    .output({ format: "image/png" });
+
+  const response = optimized.response();
+  if (!response.ok) {
+    throw new Error(`images_transform_${response.status}`);
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength < 1_000) throw new Error("images_transform_empty");
+  return bytes;
 }
 
 function normalizeFloors(value: FormDataEntryValue | null): number {
@@ -439,20 +462,21 @@ async function renderWithWorkersAi(
 
 async function renderDirect(request: Request, env: Env): Promise<Response> {
   const form = await request.formData();
-  const reference = form.get("reference");
+  const file = form.get("file");
   const kind = String(form.get("kind") || "");
 
-  if (!(reference instanceof File)) return json({ error: "reference_required" }, 400);
+  if (!(file instanceof File)) return json({ error: "file_required" }, 400);
   if (kind !== "interior" && kind !== "exterior") return json({ error: "invalid_kind" }, 400);
-  if (reference.size <= 1_000 || reference.size > 2 * 1024 * 1024) {
-    return json({ error: "invalid_reference_size" }, 413);
-  }
-  if (reference.type.trim().toLowerCase() !== "image/png") {
-    return json({ error: "reference_must_be_png" }, 415);
+  if (!isDirectImageUpload(file)) return json({ error: "image_required" }, 415);
+  if (file.size <= 1_000 || file.size > MAX_UPLOAD_BYTES) {
+    return json({ error: "invalid_file_size" }, 413);
   }
 
-  const bytes = new Uint8Array(await reference.arrayBuffer());
-  const image = await renderWithWorkersAi(kind, [bytes], normalizeOptions(form), env);
+  // Decode and resize at Cloudflare's edge. Android never has to create
+  // a canvas/blob reference, so MIME quirks and WebView decoder behavior
+  // cannot divert image uploads into the legacy Render path.
+  const reference = await normalizeImageForAi(file, env);
+  const image = await renderWithWorkersAi(kind, [reference], normalizeOptions(form), env);
   if (image.byteLength < 10_000) return json({ error: "result_too_small" }, 502);
 
   return new Response(image.slice().buffer as ArrayBuffer, {
@@ -463,7 +487,6 @@ async function renderDirect(request: Request, env: Env): Promise<Response> {
     },
   });
 }
-
 async function processJob(message: Message<RenderMessage>, env: Env): Promise<void> {
   const id = message.body.jobId;
   const job = await readJob(env, id);
@@ -529,7 +552,7 @@ export default {
     const parts = url.pathname.split("/").filter(Boolean);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, mode: "cloudflare-direct", primary: "flux-2-klein-4b", emergency: "flux-1-schnell" });
+      return json({ ok: true, mode: "cloudflare-direct-server-normalized", primary: "flux-2-klein-4b", emergency: "flux-1-schnell", preprocessing: "cloudflare-images" });
     }
 
     if (request.method === "POST" && url.pathname === "/render") {

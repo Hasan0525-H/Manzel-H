@@ -59,7 +59,7 @@ jobs:
         run: |
           python - <<'PY'
           import struct, zlib
-          w = h = 480
+          w, h = 1400, 900
           rows = []
           for y in range(h):
               row = bytearray()
@@ -82,7 +82,7 @@ jobs:
           print("smoke_png_bytes", len(png))
           PY
 
-          CODE="$(curl -sS -o /tmp/render-response.bin -w '%{http_code}'             -X POST 'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/render'             -F 'reference=@/tmp/manzel-smoke.png;type=image/png'             -F 'kind=exterior'             -F 'floors=1'             -F 'furnishing=light'             -F 'style=سعودي حديث'             -F 'garden=true'             -F 'parking=true'             -F 'fence=true'             -F 'entrance=formal')"
+          CODE="$(curl -sS -o /tmp/render-response.bin -w '%{http_code}'             -X POST 'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/render'             -F 'file=@/tmp/manzel-smoke.png;type=image/png'             -F 'kind=exterior'             -F 'floors=1'             -F 'furnishing=light'             -F 'style=سعودي حديث'             -F 'garden=true'             -F 'parking=true'             -F 'fence=true'             -F 'entrance=formal')"
 
           echo "runtime_http=$CODE"
           if [ "$CODE" != "200" ]; then

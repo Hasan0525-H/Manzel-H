@@ -111,50 +111,13 @@ function jobApiBase(): string {
 
 export function isBrowserImagePlan(file: Pick<File, "name" | "type">): boolean {
   const type = file.type.trim().toLowerCase();
-  if (type === "image/png" || type === "image/jpeg" || type === "image/webp" || type === "image/bmp") {
+  if (type === "image/png" || type === "image/jpeg" || type === "image/webp") {
     return true;
   }
 
   // Android document providers do not always preserve MIME metadata.
-  // The filename is therefore authoritative for formats WebView can decode.
-  return /\.(png|jpe?g|webp|bmp)$/i.test(file.name.trim());
-}
-
-async function createPlanReference(file: File): Promise<Blob | null> {
-  if (!isBrowserImagePlan(file)) return null;
-
-  return await new Promise<Blob | null>((resolve) => {
-    const objectUrl = URL.createObjectURL(file);
-    const image = new Image();
-
-    const finish = (blob: Blob | null) => {
-      URL.revokeObjectURL(objectUrl);
-      resolve(blob);
-    };
-
-    image.onerror = () => finish(null);
-    image.onload = () => {
-      try {
-        const maxSide = 480;
-        const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
-        const width = Math.max(1, Math.round(image.naturalWidth * scale));
-        const height = Math.max(1, Math.round(image.naturalHeight * scale));
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext("2d");
-        if (!context) {
-          finish(null);
-          return;
-        }
-        context.drawImage(image, 0, 0, width, height);
-        canvas.toBlob((blob) => finish(blob), "image/png");
-      } catch {
-        finish(null);
-      }
-    };
-    image.src = objectUrl;
-  });
+  // Route by filename when MIME metadata is missing or generic.
+  return /\.(png|jpe?g|webp)$/i.test(file.name.trim());
 }
 
 async function renderPlanDirect(
@@ -162,13 +125,8 @@ async function renderPlanDirect(
   file: File,
   options: DesignOptions,
 ): Promise<string> {
-  const reference = await createPlanReference(file);
-  if (!reference) {
-    throw new Error("direct_reference_unavailable");
-  }
-
   const body = new FormData();
-  body.append("reference", reference, "plan-reference.png");
+  body.append("file", file, file.name || "floorplan.jpg");
   body.append("kind", kind);
   body.append("floors", String(options.floors));
   body.append("furnishing", options.furnishing);
@@ -221,14 +179,6 @@ async function createRenderJob(
   body.append("parking", String(options.parking));
   body.append("fence", String(options.fence));
   body.append("entrance", options.entrance);
-
-  // Keep the primary Workers AI path independent from the Render backend.
-  // FLUX.2 reference inputs must be below 512x512, so the app prepares a
-  // compact reference locally and uploads it alongside the original plan.
-  const reference = await createPlanReference(file);
-  if (reference) {
-    body.append("reference", reference, "plan-reference.png");
-  }
 
   const response = await fetchWithTimeout(`${jobApiBase()}/jobs/render`, {
     method: "POST",
