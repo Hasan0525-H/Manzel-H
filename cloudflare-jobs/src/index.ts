@@ -374,14 +374,14 @@ async function renderViaBackend(
   }
 }
 
-async function renderWithWorkersAi(
+async function runFluxKlein(
   kind: RenderKind,
   references: Uint8Array[],
   options: RenderOptions,
   env: Env,
 ): Promise<Uint8Array> {
   const form = new FormData();
-  references.forEach((bytes, index) => {
+  references.slice(0, 4).forEach((bytes, index) => {
     form.append(
       `input_image_${index}`,
       new Blob([bytes.slice().buffer as ArrayBuffer], { type: "image/png" }),
@@ -389,22 +389,81 @@ async function renderWithWorkersAi(
     );
   });
   form.append("prompt", architecturalPrompt(kind, options));
-  form.append("width", kind === "interior" ? "1536" : "1440");
-  form.append("height", kind === "interior" ? "1536" : "1920");
+  form.append("width", "1024");
+  form.append("height", kind === "interior" ? "1024" : "1344");
   form.append("guidance", "4.5");
 
   const serialized = new Response(form);
   const contentType = serialized.headers.get("content-type");
   if (!serialized.body || !contentType) throw new Error("multipart_serialization_failed");
 
-  const result = await env.AI.run("@cf/black-forest-labs/flux-2-klein-9b", {
+  const result = await env.AI.run("@cf/black-forest-labs/flux-2-klein-4b", {
     multipart: {
       body: serialized.body,
       contentType,
     },
   });
-
   return bytesFromAiResult(result);
+}
+
+async function runFluxSchnell(
+  kind: RenderKind,
+  options: RenderOptions,
+  env: Env,
+): Promise<Uint8Array> {
+  const result = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", {
+    prompt: architecturalPrompt(kind, options),
+    width: 1024,
+    height: kind === "interior" ? 1024 : 1344,
+    steps: 4,
+  });
+  return bytesFromAiResult(result);
+}
+
+async function renderWithWorkersAi(
+  kind: RenderKind,
+  references: Uint8Array[],
+  options: RenderOptions,
+  env: Env,
+): Promise<Uint8Array> {
+  try {
+    return await runFluxKlein(kind, references, options, env);
+  } catch (primaryError) {
+    try {
+      return await runFluxSchnell(kind, options, env);
+    } catch (emergencyError) {
+      const primary = primaryError instanceof Error ? primaryError.message : "klein_unknown";
+      const emergency = emergencyError instanceof Error ? emergencyError.message : "schnell_unknown";
+      throw new Error(`workers_ai_unavailable: ${primary}; ${emergency}`);
+    }
+  }
+}
+
+async function renderDirect(request: Request, env: Env): Promise<Response> {
+  const form = await request.formData();
+  const reference = form.get("reference");
+  const kind = String(form.get("kind") || "");
+
+  if (!(reference instanceof File)) return json({ error: "reference_required" }, 400);
+  if (kind !== "interior" && kind !== "exterior") return json({ error: "invalid_kind" }, 400);
+  if (reference.size <= 1_000 || reference.size > 2 * 1024 * 1024) {
+    return json({ error: "invalid_reference_size" }, 413);
+  }
+  if (reference.type.trim().toLowerCase() !== "image/png") {
+    return json({ error: "reference_must_be_png" }, 415);
+  }
+
+  const bytes = new Uint8Array(await reference.arrayBuffer());
+  const image = await renderWithWorkersAi(kind, [bytes], normalizeOptions(form), env);
+  if (image.byteLength < 10_000) return json({ error: "result_too_small" }, 502);
+
+  return new Response(image, {
+    headers: {
+      "content-type": "image/png",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+    },
+  });
 }
 
 async function processJob(message: Message<RenderMessage>, env: Env): Promise<void> {
@@ -472,7 +531,18 @@ export default {
     const parts = url.pathname.split("/").filter(Boolean);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, mode: "queue-r2-ai-with-backend-fallback", backend: env.RENDER_BACKEND_URL });
+      return json({ ok: true, mode: "cloudflare-direct", primary: "flux-2-klein-4b", emergency: "flux-1-schnell" });
+    }
+
+    if (request.method === "POST" && url.pathname === "/render") {
+      try {
+        return await renderDirect(request, env);
+      } catch (error) {
+        return json({
+          error: "render_failed",
+          detail: error instanceof Error ? error.message.slice(0, 300) : "unknown_error",
+        }, 503);
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/jobs/render") {

@@ -146,6 +146,41 @@ async function createPlanReference(file: File): Promise<Blob | null> {
   });
 }
 
+async function renderPlanDirect(
+  kind: "interior" | "exterior",
+  file: File,
+  options: DesignOptions,
+): Promise<string> {
+  const reference = await createPlanReference(file);
+  if (!reference) {
+    throw new Error("direct_reference_unavailable");
+  }
+
+  const body = new FormData();
+  body.append("reference", reference, "plan-reference.png");
+  body.append("kind", kind);
+  body.append("floors", String(options.floors));
+  body.append("furnishing", options.furnishing);
+  body.append("style", options.style);
+  body.append("garden", String(options.garden));
+  body.append("parking", String(options.parking));
+  body.append("fence", String(options.fence));
+  body.append("entrance", options.entrance);
+
+  const response = await fetchWithTimeout(
+    `${jobApiBase()}/render`,
+    { method: "POST", body },
+    180_000,
+  );
+  if (!response.ok) {
+    throw new Error(`Direct render HTTP ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  if (blob.size < 1_000) throw new Error("Empty direct render");
+  return URL.createObjectURL(blob);
+}
+
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit = {},
@@ -251,16 +286,10 @@ export async function renderPlanWithRecovery(
   file: File,
   options: DesignOptions,
 ): Promise<string> {
-  try {
-    return await renderPlanViaJob(kind, file, options);
-  } catch (queuedError) {
-    try {
-      return await renderPlanInCloud(kind, file, options);
-    } catch (directError) {
-      throw new AggregateError(
-        [queuedError, directError],
-        "Queued and direct render paths both failed",
-      );
-    }
+  // Image plans render synchronously on Cloudflare and no longer depend on Render.
+  // PDF plans keep the queued compatibility path until they can be rasterized locally.
+  if (file.type.toLowerCase().startsWith("image/")) {
+    return await renderPlanDirect(kind, file, options);
   }
+  return await renderPlanViaJob(kind, file, options);
 }
