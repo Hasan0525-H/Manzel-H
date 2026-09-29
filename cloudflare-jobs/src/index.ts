@@ -413,8 +413,6 @@ async function runFluxSchnell(
 ): Promise<Uint8Array> {
   const result = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", {
     prompt: architecturalPrompt(kind, options),
-    width: 1024,
-    height: kind === "interior" ? 1024 : 1344,
     steps: 4,
   });
   return bytesFromAiResult(result);
@@ -457,7 +455,7 @@ async function renderDirect(request: Request, env: Env): Promise<Response> {
   const image = await renderWithWorkersAi(kind, [bytes], normalizeOptions(form), env);
   if (image.byteLength < 10_000) return json({ error: "result_too_small" }, 502);
 
-  return new Response(image, {
+  return new Response(image.slice().buffer as ArrayBuffer, {
     headers: {
       "content-type": "image/png",
       "cache-control": "no-store",
