@@ -150,3 +150,45 @@ VITE_ANALYZER_URL=http://localhost:8000 npm run dev
 - معاينة 3D مكدسة؛ الطابق الحالي كامل التفاصيل والطوابق الأخرى تظهر كـ Ghost Geometry للمراجعة والمحاذاة.
 
 > V7 يضيف بنية تعدد الطوابق فعلياً. ما زال ربط فتحات السلالم بين البلاطات وتوليد الفتحات الرأسية يحتاج مرحلة لاحقة مستقلة.
+
+
+## Cloud architecture V8
+
+The production path is cloud-only:
+
+```text
+Android/Web
+→ Cloudflare Worker gateway
+→ R2 / Queue
+→ Modal CPU analysis
+→ Modal GPU Qwen-Image-Edit-2509
+→ R2
+→ client
+```
+
+Key points:
+
+- Cloudflare is now only the gateway, queue and object-storage layer.
+- Cloudflare Workers AI is intentionally removed from the rendering path.
+- Heavy analysis and image editing run on Modal.
+- Qwen-Image-Edit-2509 weights are pulled from ModelScope into a persistent Modal Volume; Hugging Face Inference is not used.
+- The first GPU cold start can be long because the model is large. Subsequent calls reuse the cached model and Modal container when available.
+
+### Required deployment settings
+
+GitHub Secrets:
+
+```text
+MODAL_TOKEN_ID
+MODAL_TOKEN_SECRET
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+```
+
+GitHub repository variable after the first Modal deployment:
+
+```text
+MODAL_PIPELINE_URL=https://<modal-asgi-endpoint>
+```
+
+The Cloudflare deployment workflow injects that URL into the gateway.

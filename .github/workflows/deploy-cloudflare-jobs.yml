@@ -1,5 +1,4 @@
 name: deploy-cloudflare-jobs
-# retrigger after Cloudflare secrets configured
 
 on:
   workflow_dispatch:
@@ -15,6 +14,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      MODAL_PIPELINE_URL: ${{ vars.MODAL_PIPELINE_URL }}
     defaults:
       run:
         working-directory: cloudflare-jobs
@@ -31,6 +31,14 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Assert Workers AI was removed
+        shell: bash
+        run: |
+          if grep -R "@cf/\|env\.AI\|Workers AI" src wrangler.jsonc; then
+            echo "Legacy Workers AI reference detected."
+            exit 1
+          fi
+
       - name: Check Cloudflare credentials
         id: cloudflare
         shell: bash
@@ -42,99 +50,27 @@ jobs:
             echo "Cloudflare secrets are not configured; skipping deployment."
           fi
 
-      - name: Create queue and buckets
+      - name: Create queue and bucket
         if: steps.cloudflare.outputs.configured == 'true'
         run: |
           npx wrangler queues create manzel-h-render-jobs || true
           npx wrangler queues create manzel-h-render-dead || true
           npx wrangler r2 bucket create manzel-h-jobs || true
 
-      - name: Deploy Worker
-        if: steps.cloudflare.outputs.configured == 'true'
-        run: npx wrangler deploy
-
-      - name: Runtime smoke test
+      - name: Deploy gateway
         if: steps.cloudflare.outputs.configured == 'true'
         shell: bash
         run: |
-          python - <<'PY'
-          import struct, zlib
-          w, h = 1400, 900
-          rows = []
-          for y in range(h):
-              row = bytearray()
-              for x in range(w):
-                  base = 245 - ((x + y) % 17)
-                  if x in range(40, 46) or x in range(210, 218) or x in range(432, 439) or y in range(45, 52) or y in range(220, 227) or y in range(425, 433):
-                      r = g = b = 24
-                  else:
-                      r = g = b = base
-                  row.extend((r, g, b))
-              rows.append(b"\x00" + bytes(row))
-          raw = b"".join(rows)
-          def chunk(t, d):
-              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
-          png = b"\x89PNG\r\n\x1a\n"
-          png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-          png += chunk(b"IDAT", zlib.compress(raw, 6))
-          png += chunk(b"IEND", b"")
-          open("/tmp/manzel-smoke.png", "wb").write(png)
-          print("smoke_png_bytes", len(png))
-          PY
-
-          CODE="$(curl -sS -o /tmp/render-response.bin -w '%{http_code}'             -X POST 'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/render'             -F 'file=@/tmp/manzel-smoke.png;type=image/png'             -F 'kind=exterior'             -F 'floors=1'             -F 'furnishing=light'             -F 'style=سعودي حديث'             -F 'garden=true'             -F 'parking=true'             -F 'fence=true'             -F 'entrance=formal')"
-
-          echo "runtime_http=$CODE"
-          if [ "$CODE" != "200" ]; then
-            echo "Runtime render failed:"
-            cat /tmp/render-response.bin
-            exit 1
+          if [ -n "$MODAL_PIPELINE_URL" ]; then
+            npx wrangler deploy --var "MODAL_PIPELINE_URL:$MODAL_PIPELINE_URL"
+          else
+            npx wrangler deploy
           fi
 
-          BYTES="$(wc -c < /tmp/render-response.bin)"
-          echo "runtime_image_bytes=$BYTES"
-          if [ "$BYTES" -lt 10000 ]; then
-            echo "Runtime render returned an unexpectedly small image."
-            exit 1
-          fi
-
-          python - <<'PY'
-          import base64, json
-          raw = open("/tmp/manzel-smoke.png", "rb").read()
-          payload = {
-              "imageBase64": base64.b64encode(raw).decode("ascii"),
-              "filename": "floorplan.jpg",
-              "contentType": "image/jpeg",
-              "kind": "exterior",
-              "floors": 1,
-              "furnishing": "light",
-              "style": "سعودي حديث",
-              "garden": True,
-              "parking": True,
-              "fence": True,
-              "entrance": "formal",
-          }
-          open("/tmp/render-json-payload.json", "w", encoding="utf-8").write(
-              json.dumps(payload, ensure_ascii=False)
-          )
-          PY
-
-          JSON_CODE="$(curl -sS -o /tmp/render-json-response.json -w '%{http_code}' \
-            -X POST 'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/render-json' \
-            -H 'Content-Type: application/json' \
-            --data-binary @/tmp/render-json-payload.json)"
-
-          echo "runtime_json_http=$JSON_CODE"
-          if [ "$JSON_CODE" != "200" ]; then
-            cat /tmp/render-json-response.json
-            exit 1
-          fi
-
-          python - <<'PY'
-          import base64, json
-          data = json.load(open("/tmp/render-json-response.json", encoding="utf-8"))
-          raw = base64.b64decode(data.get("imageBase64", ""))
-          print("runtime_json_image_bytes", len(raw))
-          if len(raw) < 10000:
-              raise SystemExit("JSON render returned an unexpectedly small image")
-          PY
+      - name: Gateway health
+        if: steps.cloudflare.outputs.configured == 'true' && env.MODAL_PIPELINE_URL != ''
+        shell: bash
+        run: |
+          STATUS="$(curl -sS -o /tmp/health.json -w '%{http_code}'             'https://manzel-h-cloud-jobs.kd-alsalhi.workers.dev/health')"
+          cat /tmp/health.json
+          test "$STATUS" = "200"

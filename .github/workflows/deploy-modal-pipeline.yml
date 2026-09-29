@@ -1,0 +1,49 @@
+name: deploy-modal-pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "services/modal-pipeline/**"
+      - ".github/workflows/deploy-modal-pipeline.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Syntax check
+        run: python -m py_compile services/modal-pipeline/modal_app.py
+
+      - name: Check Modal credentials
+        id: modal
+        shell: bash
+        run: |
+          if [ -n "$MODAL_TOKEN_ID" ] && [ -n "$MODAL_TOKEN_SECRET" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Modal credentials are not configured; deployment skipped."
+          fi
+
+      - name: Install Modal
+        if: steps.modal.outputs.configured == 'true'
+        run: pip install "modal>=1.1,<2"
+
+      - name: Deploy pipeline
+        if: steps.modal.outputs.configured == 'true'
+        run: modal deploy services/modal-pipeline/modal_app.py
+
+      - name: Show setup note
+        if: steps.modal.outputs.configured == 'true'
+        run: |
+          echo "Modal deployed. Copy the ASGI endpoint URL to repository variable MODAL_PIPELINE_URL."

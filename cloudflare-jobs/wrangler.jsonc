@@ -28,8 +28,6 @@
     ]
   },
   "vars": {
-    "RENDER_BACKEND_URL": "https://manzel-h-studio-v142.onrender.com"
-  },
-  "ai": { "binding": "AI" },
-  "images": { "binding": "IMAGES" }
+    "MODAL_PIPELINE_URL": ""
+  }
 }

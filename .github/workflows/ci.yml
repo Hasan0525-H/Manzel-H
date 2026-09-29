@@ -17,10 +17,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m py_compile services/analyzer/app.py services/ml-analyzer/app.py services/ml-analyzer/house_builder.py services/ml-analyzer/render_images.py services/ml-analyzer/render_images_v2.py services/ml-analyzer/cloudflare_renderer.py services/render-gateway/app.py
+      - run: python -m py_compile services/analyzer/app.py services/ml-analyzer/app.py services/ml-analyzer/house_builder.py services/ml-analyzer/render_images.py services/ml-analyzer/render_images_v2.py services/ml-analyzer/cloudflare_renderer.py services/render-gateway/app.py services/modal-pipeline/modal_app.py
 
       - name: Check Cloudflare jobs worker
         working-directory: cloudflare-jobs
         run: |
           npm install
           npx tsc --noEmit
+          if grep -R "@cf/\|env\.AI\|Workers AI" src wrangler.jsonc; then
+            echo "Legacy Workers AI reference detected."
+            exit 1
+          fi

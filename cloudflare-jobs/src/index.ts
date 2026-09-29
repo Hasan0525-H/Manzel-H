@@ -1,9 +1,7 @@
 interface Env {
   JOBS: R2Bucket;
   RENDER_QUEUE: Queue<RenderMessage>;
-  RENDER_BACKEND_URL: string;
-  AI: Ai;
-  IMAGES: ImagesBinding;
+  MODAL_PIPELINE_URL?: string;
 }
 
 type RenderKind = "interior" | "exterior";
@@ -27,7 +25,6 @@ type JobRecord = {
   filename: string;
   contentType: string;
   inputKey: string;
-  referenceKey?: string;
   outputKey?: string;
   options: RenderOptions;
   attempts: number;
@@ -64,6 +61,12 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function modalBase(env: Env): string {
+  const base = env.MODAL_PIPELINE_URL?.trim().replace(/\/$/, "");
+  if (!base) throw new Error("modal_pipeline_not_configured");
+  return base;
+}
+
 function jobKey(id: string): string {
   return `jobs/${id}.json`;
 }
@@ -84,31 +87,7 @@ async function writeJob(env: Env, job: JobRecord): Promise<void> {
 function isSupportedUpload(file: File): boolean {
   const contentType = file.type.trim().toLowerCase();
   if (SUPPORTED_UPLOAD_MIME_TYPES.has(contentType)) return true;
-
-  const filename = file.name.trim().toLowerCase();
-  return /\.(pdf|png|jpe?g|webp|bmp|tiff?)$/.test(filename);
-}
-
-function isDirectImageUpload(file: File): boolean {
-  const type = file.type.trim().toLowerCase();
-  if (type === "image/png" || type === "image/jpeg" || type === "image/webp") return true;
-  return /\.(png|jpe?g|webp)$/i.test(file.name.trim());
-}
-
-async function normalizeImageForAi(file: File, env: Env): Promise<Uint8Array> {
-  const optimized = await env.IMAGES
-    .input(file.stream())
-    .transform({ width: 480, height: 480, fit: "scale-down" })
-    .output({ format: "image/png" });
-
-  const response = optimized.response();
-  if (!response.ok) {
-    throw new Error(`images_transform_${response.status}`);
-  }
-
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength < 1_000) throw new Error("images_transform_empty");
-  return bytes;
+  return /\.(pdf|png|jpe?g|webp|bmp|tiff?)$/i.test(file.name.trim());
 }
 
 function normalizeFloors(value: FormDataEntryValue | null): number {
@@ -131,22 +110,76 @@ function normalizeOptions(form: FormData): RenderOptions {
   };
 }
 
+function bytesToBase64(value: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < value.length; offset += chunkSize) {
+    binary += String.fromCharCode(...value.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function callModal(
+  env: Env,
+  path: "/health" | "/render" | "/analyze",
+  init: RequestInit = {},
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), path === "/render" ? 780_000 : 120_000);
+  try {
+    return await fetch(`${modalBase(env)}${path}`, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function forwardJson(request: Request, env: Env, path: "/render" | "/analyze"): Promise<Response> {
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+
+  let response: Response;
+  try {
+    response = await callModal(env, path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    return json({
+      error: "pipeline_unavailable",
+      detail: error instanceof Error ? error.message : "unknown_error",
+    }, 503);
+  }
+
+  const body = await response.text();
+  const headers = new Headers(jsonHeaders);
+  headers.set("x-manzel-pipeline", "modal");
+  return new Response(body, { status: response.status, headers });
+}
+
 async function createJob(request: Request, env: Env): Promise<Response> {
   const form = await request.formData();
   const file = form.get("file");
-  const reference = form.get("reference");
   const kind = String(form.get("kind") || "");
 
   if (!(file instanceof File)) return json({ error: "file_required" }, 400);
-  if (kind !== "interior" && kind !== "exterior") {
-    return json({ error: "invalid_kind" }, 400);
-  }
-  if (!isSupportedUpload(file)) {
-    return json({ error: "unsupported_file_type" }, 415);
-  }
-  if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) {
-    return json({ error: "invalid_file_size" }, 413);
-  }
+  if (kind !== "interior" && kind !== "exterior") return json({ error: "invalid_kind" }, 400);
+  if (!isSupportedUpload(file)) return json({ error: "unsupported_file_type" }, 415);
+  if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) return json({ error: "invalid_file_size" }, 413);
 
   const id = crypto.randomUUID();
   const inputKey = `inputs/${id}/plan`;
@@ -157,19 +190,6 @@ async function createJob(request: Request, env: Env): Promise<Response> {
     customMetadata: { filename: file.name || "floorplan" },
   });
 
-  let referenceKey: string | undefined;
-  if (
-    reference instanceof File &&
-    reference.size > 0 &&
-    reference.size <= 2 * 1024 * 1024 &&
-    reference.type.trim().toLowerCase() === "image/png"
-  ) {
-    referenceKey = `inputs/${id}/reference.png`;
-    await env.JOBS.put(referenceKey, reference.stream(), {
-      httpMetadata: { contentType: "image/png" },
-    });
-  }
-
   const job: JobRecord = {
     id,
     kind,
@@ -177,12 +197,12 @@ async function createJob(request: Request, env: Env): Promise<Response> {
     filename: file.name || "floorplan",
     contentType: file.type || "application/octet-stream",
     inputKey,
-    referenceKey,
     options: normalizeOptions(form),
     attempts: 0,
     createdAt,
     updatedAt: createdAt,
   };
+
   await writeJob(env, job);
   await env.RENDER_QUEUE.send({ jobId: id });
 
@@ -227,330 +247,6 @@ async function getResult(id: string, env: Env): Promise<Response> {
   return new Response(obj.body, { headers });
 }
 
-
-function architecturalPrompt(kind: RenderKind, options: RenderOptions): string {
-  const floorRule =
-    options.floors === 1
-      ? "MANDATORY MASSING: EXACTLY ONE STOREY / GROUND FLOOR ONLY. The entire building must have one habitable level only. No first floor, no second floor, no upper balconies, no stacked windows, no double-height facade that looks like another storey. Use a low horizontal single-storey villa silhouette."
-      : `MANDATORY MASSING: EXACTLY ${options.floors} STOREYS, no more and no fewer. Clearly show exactly ${options.floors} habitable levels in the architecture.`;
-
-  const styleRules: Record<string, string> = {
-    "سعودي حديث": "MANDATORY STYLE: contemporary Saudi villa. Saudi/Gulf residential proportions; privacy-first facade; restrained openings; shaded recessed entrance; warm Riyadh/Najdi limestone or local beige stone; warm off-white stucco; subtle dark bronze or wood accents; deep shade; climate-appropriate details. Avoid European, Mediterranean, American, tropical, Moroccan, neoclassical, ornate palace, generic international-box, and all-glass styles.",
-    "نجدي حديث": "MANDATORY STYLE: modern Najdi Saudi architecture. Strong simple earth-toned masses, Riyadh/Najdi limestone and warm sand plaster, deep-set openings, privacy screens inspired by Najdi geometry, shaded entrance, contemporary interpretation without historic ornament overload.",
-    "حجازي حديث": "MANDATORY STYLE: modern Hijazi Saudi architecture. Contemporary western-Saudi villa with shaded openings, refined modern rawasheen-inspired screens, warm light stone and plaster, privacy, deep reveals and climate-responsive facade. No Ottoman or Moroccan pastiche.",
-    "مودرن فاخر": "MANDATORY STYLE: restrained luxury contemporary villa, premium stone, warm plaster, bronze/wood accents, strong horizontal proportions, architectural lighting, no classical ornament.",
-  };
-  const styleRule = styleRules[options.style] || `MANDATORY STYLE: ${options.style}. Follow this selected style literally and do not substitute another architectural style.`;
-
-  const common = [
-    "HARD CONSTRAINTS OVERRIDE BEAUTIFICATION. Never violate the requested storey count or selected architectural style.",
-    floorRule,
-    styleRule,
-    "The supplied reference images all represent the exact same authoritative floor plan.",
-    "Preserve footprint, wall layout, room adjacency, circulation, openings, proportions and orientation.",
-    "Do not mirror, rotate, stretch, merge rooms, remove rooms, or invent structural walls.",
-    "Photorealistic professional architectural visualization, physically plausible materials and lighting, accurate scale, no text, no watermark.",
-  ];
-
-  if (kind === "interior") {
-    const furnishing =
-      options.furnishing === "none"
-        ? "MANDATORY FURNISHING: completely unfurnished; architecture and finishes only."
-        : options.furnishing === "light"
-          ? "MANDATORY FURNISHING: lightly furnished; only essential furniture, generous empty space."
-          : "MANDATORY FURNISHING: fully furnished with coherent premium contemporary furniture.";
-
-    return [
-      ...common,
-      furnishing,
-      "Generate a realistic isometric cutaway / dollhouse interior visualization.",
-      "The plan must remain traceable one-to-one in the result.",
-      "Do not add another floor above the selected floor count.",
-    ].join(" ");
-  }
-
-  const site = [
-    options.garden ? "Include a landscaped Saudi-climate garden." : "NO GARDEN or decorative planted yard.",
-    options.parking ? "Include clearly usable residential parking." : "NO parking bay, garage, carport or driveway emphasis.",
-    options.fence ? "Include a privacy boundary wall/fence." : "NO boundary wall or fence.",
-    options.entrance === "formal" ? "Use a prominent formal entrance." : "Use a simple understated entrance.",
-  ].join(" ");
-
-  return [
-    ...common,
-    "Generate one straight-on eye-level photorealistic exterior villa facade.",
-    site,
-    "The visible massing must make the requested storey count unmistakable.",
-    options.floors === 1 ? "Keep the roofline low and horizontal. One row of normal-height facade openings only." : "",
-    "Saudi climate, realistic daylight, straight verticals, high-end real-estate archviz.",
-  ].filter(Boolean).join(" ");
-}
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-function bytesToBase64(value: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < value.length; offset += chunkSize) {
-    binary += String.fromCharCode(...value.subarray(offset, offset + chunkSize));
-  }
-  return btoa(binary);
-}
-
-function bytesFromAiResult(result: unknown): Uint8Array {
-  if (result && typeof result === "object" && "image" in result) {
-    const image = (result as { image?: unknown }).image;
-    if (typeof image === "string" && image.length > 100) return base64ToBytes(image);
-  }
-
-  throw new Error("workers_ai_invalid_image_response");
-}
-
-async function prepareReferences(
-  bytes: ArrayBuffer,
-  job: JobRecord,
-  env: Env,
-): Promise<Uint8Array[]> {
-  const form = new FormData();
-  form.append("file", new File([bytes], job.filename, { type: job.contentType }));
-
-  const base = env.RENDER_BACKEND_URL.replace(/\/$/, "");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90_000);
-
-  let response: Response;
-  try {
-    response = await fetch(`${base}/prepare-references`, {
-      method: "POST",
-      body: form,
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("prepare_references_timeout");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  if (!response.ok) {
-    const detail = (await response.text()).slice(0, 220);
-    throw new Error(`prepare_references_${response.status}_${detail}`);
-  }
-
-  const data = await response.json() as { images?: string[] };
-  const images = (data.images || []).slice(0, 4).map(base64ToBytes);
-  if (!images.length) throw new Error("prepare_references_empty");
-  return images;
-}
-
-async function loadReferences(
-  inputBytes: ArrayBuffer,
-  job: JobRecord,
-  env: Env,
-): Promise<Uint8Array[]> {
-  if (job.referenceKey) {
-    const reference = await env.JOBS.get(job.referenceKey);
-    if (reference) {
-      const bytes = new Uint8Array(await reference.arrayBuffer());
-      if (bytes.byteLength > 1_000) return [bytes];
-    }
-  }
-
-  return await prepareReferences(inputBytes, job, env);
-}
-
-async function renderViaBackend(
-  inputBytes: ArrayBuffer,
-  job: JobRecord,
-  env: Env,
-): Promise<Uint8Array> {
-  const form = new FormData();
-  form.append("file", new File([inputBytes], job.filename, { type: job.contentType }));
-  form.append("floors", String(job.options.floors));
-  form.append("furnishing", job.options.furnishing);
-  form.append("style", job.options.style);
-  form.append("garden", String(job.options.garden));
-  form.append("parking", String(job.options.parking));
-  form.append("fence", String(job.options.fence));
-  form.append("entrance", job.options.entrance);
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 240_000);
-  try {
-    const base = env.RENDER_BACKEND_URL.replace(/\/$/, "");
-    const response = await fetch(`${base}/render-plan/${job.kind}`, {
-      method: "POST",
-      body: form,
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 220);
-      throw new Error(`backend_render_${response.status}_${detail}`);
-    }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength < 10_000) throw new Error("backend_result_too_small");
-    return bytes;
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("backend_render_timeout");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function runFluxKlein(
-  kind: RenderKind,
-  references: Uint8Array[],
-  options: RenderOptions,
-  env: Env,
-): Promise<Uint8Array> {
-  const form = new FormData();
-  references.slice(0, 4).forEach((bytes, index) => {
-    form.append(
-      `input_image_${index}`,
-      new Blob([bytes.slice().buffer as ArrayBuffer], { type: "image/png" }),
-      `plan-reference-${index}.png`,
-    );
-  });
-  form.append("prompt", architecturalPrompt(kind, options));
-  form.append("width", "1024");
-  form.append("height", kind === "interior" ? "1024" : "1344");
-  form.append("guidance", "4.5");
-
-  const serialized = new Response(form);
-  const contentType = serialized.headers.get("content-type");
-  if (!serialized.body || !contentType) throw new Error("multipart_serialization_failed");
-
-  const result = await env.AI.run("@cf/black-forest-labs/flux-2-klein-4b", {
-    multipart: {
-      body: serialized.body,
-      contentType,
-    },
-  });
-  return bytesFromAiResult(result);
-}
-
-async function runFluxSchnell(
-  kind: RenderKind,
-  options: RenderOptions,
-  env: Env,
-): Promise<Uint8Array> {
-  const result = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", {
-    prompt: architecturalPrompt(kind, options),
-    steps: 4,
-  });
-  return bytesFromAiResult(result);
-}
-
-async function renderWithWorkersAi(
-  kind: RenderKind,
-  references: Uint8Array[],
-  options: RenderOptions,
-  env: Env,
-): Promise<Uint8Array> {
-  try {
-    return await runFluxKlein(kind, references, options, env);
-  } catch (primaryError) {
-    try {
-      return await runFluxSchnell(kind, options, env);
-    } catch (emergencyError) {
-      const primary = primaryError instanceof Error ? primaryError.message : "klein_unknown";
-      const emergency = emergencyError instanceof Error ? emergencyError.message : "schnell_unknown";
-      throw new Error(`workers_ai_unavailable: ${primary}; ${emergency}`);
-    }
-  }
-}
-
-async function renderJson(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as {
-    imageBase64?: string;
-    filename?: string;
-    contentType?: string;
-    kind?: string;
-    floors?: number;
-    furnishing?: string;
-    style?: string;
-    garden?: boolean;
-    parking?: boolean;
-    fence?: boolean;
-    entrance?: string;
-  };
-
-  const kind = String(body.kind || "");
-  if (kind !== "interior" && kind !== "exterior") return json({ error: "invalid_kind" }, 400);
-  if (!body.imageBase64 || typeof body.imageBase64 !== "string") {
-    return json({ error: "image_required" }, 400);
-  }
-
-  let raw: Uint8Array;
-  try {
-    raw = base64ToBytes(body.imageBase64);
-  } catch {
-    return json({ error: "invalid_base64" }, 400);
-  }
-  if (raw.byteLength <= 1_000 || raw.byteLength > MAX_UPLOAD_BYTES) {
-    return json({ error: "invalid_file_size" }, 413);
-  }
-
-  const filename = String(body.filename || "floorplan.jpg");
-  const contentType = String(body.contentType || "application/octet-stream");
-  const file = new File([raw.slice().buffer as ArrayBuffer], filename, { type: contentType });
-  if (!isDirectImageUpload(file)) return json({ error: "image_required" }, 415);
-
-  const form = new FormData();
-  form.set("floors", String(body.floors ?? 1));
-  form.set("furnishing", String(body.furnishing ?? "full"));
-  form.set("style", String(body.style || "سعودي حديث"));
-  form.set("garden", String(body.garden ?? true));
-  form.set("parking", String(body.parking ?? true));
-  form.set("fence", String(body.fence ?? true));
-  form.set("entrance", String(body.entrance || "formal"));
-
-  const reference = await normalizeImageForAi(file, env);
-  const image = await renderWithWorkersAi(kind, [reference], normalizeOptions(form), env);
-  if (image.byteLength < 10_000) return json({ error: "result_too_small" }, 502);
-
-  return json({
-    imageBase64: bytesToBase64(image),
-    mime: "image/png",
-  });
-}
-
-async function renderDirect(request: Request, env: Env): Promise<Response> {
-  const form = await request.formData();
-  const file = form.get("file");
-  const kind = String(form.get("kind") || "");
-
-  if (!(file instanceof File)) return json({ error: "file_required" }, 400);
-  if (kind !== "interior" && kind !== "exterior") return json({ error: "invalid_kind" }, 400);
-  if (!isDirectImageUpload(file)) return json({ error: "image_required" }, 415);
-  if (file.size <= 1_000 || file.size > MAX_UPLOAD_BYTES) {
-    return json({ error: "invalid_file_size" }, 413);
-  }
-
-  // Decode and resize at Cloudflare's edge. Android never has to create
-  // a canvas/blob reference, so MIME quirks and WebView decoder behavior
-  // cannot divert image uploads into the legacy Render path.
-  const reference = await normalizeImageForAi(file, env);
-  const image = await renderWithWorkersAi(kind, [reference], normalizeOptions(form), env);
-  if (image.byteLength < 10_000) return json({ error: "result_too_small" }, 502);
-
-  return new Response(image.slice().buffer as ArrayBuffer, {
-    headers: {
-      "content-type": "image/png",
-      "cache-control": "no-store",
-      "access-control-allow-origin": "*",
-    },
-  });
-}
 async function processJob(message: Message<RenderMessage>, env: Env): Promise<void> {
   const id = message.body.jobId;
   const job = await readJob(env, id);
@@ -567,31 +263,39 @@ async function processJob(message: Message<RenderMessage>, env: Env): Promise<vo
   try {
     const input = await env.JOBS.get(job.inputKey);
     if (!input) throw new Error("input_missing");
-    const inputBytes = await input.arrayBuffer();
 
-    let image: Uint8Array;
-    try {
-      const references = await loadReferences(inputBytes, job, env);
-      image = await renderWithWorkersAi(job.kind, references, job.options, env);
-      if (image.byteLength < 10_000) throw new Error("result_too_small");
-    } catch (primaryError) {
-      try {
-        image = await renderViaBackend(inputBytes, job, env);
-      } catch (fallbackError) {
-        const primary = primaryError instanceof Error ? primaryError.message : "primary_unknown";
-        const fallback = fallbackError instanceof Error ? fallbackError.message : "fallback_unknown";
-        throw new Error(`all_render_paths_failed: ${primary}; ${fallback}`);
-      }
+    const raw = new Uint8Array(await input.arrayBuffer());
+    const payload = {
+      imageBase64: bytesToBase64(raw),
+      filename: job.filename,
+      contentType: job.contentType,
+      kind: job.kind,
+      ...job.options,
+    };
+
+    const response = await callModal(env, "/render", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 300);
+      throw new Error(`modal_render_${response.status}_${detail}`);
     }
+
+    const result = await response.json() as { imageBase64?: string; mime?: string };
+    if (!result.imageBase64) throw new Error("modal_render_missing_image");
+    const image = base64ToBytes(result.imageBase64);
+    if (image.byteLength < 10_000) throw new Error("modal_render_result_too_small");
 
     const outputKey = `outputs/${job.id}/${job.kind}.png`;
     await env.JOBS.put(outputKey, image, {
-      httpMetadata: { contentType: "image/png" },
+      httpMetadata: { contentType: result.mime || "image/png" },
     });
 
     job.status = "done";
     job.outputKey = outputKey;
-    job.error = undefined;
     await writeJob(env, job);
     message.ack();
   } catch (error) {
@@ -603,7 +307,7 @@ async function processJob(message: Message<RenderMessage>, env: Env): Promise<vo
     } else {
       job.status = "queued";
       await writeJob(env, job);
-      message.retry({ delaySeconds: Math.min(60, 5 * job.attempts) });
+      message.retry({ delaySeconds: Math.min(60, 10 * job.attempts) });
     }
   }
 }
@@ -616,29 +320,33 @@ export default {
     const parts = url.pathname.split("/").filter(Boolean);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, mode: "cloudflare-direct-server-normalized", primary: "flux-2-klein-4b", emergency: "flux-1-schnell", preprocessing: "cloudflare-images" });
+      try {
+        const response = await callModal(env, "/health");
+        const pipeline = await response.json().catch(() => null);
+        return json({
+          ok: response.ok,
+          gateway: "cloudflare",
+          pipeline: "modal",
+          configured: true,
+          upstream: pipeline,
+        }, response.ok ? 200 : 503);
+      } catch (error) {
+        return json({
+          ok: false,
+          gateway: "cloudflare",
+          pipeline: "modal",
+          configured: Boolean(env.MODAL_PIPELINE_URL?.trim()),
+          error: error instanceof Error ? error.message : "unknown_error",
+        }, 503);
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/render-json") {
-      try {
-        return await renderJson(request, env);
-      } catch (error) {
-        return json({
-          error: "render_failed",
-          detail: error instanceof Error ? error.message.slice(0, 300) : "unknown_error",
-        }, 503);
-      }
+      return forwardJson(request, env, "/render");
     }
 
-    if (request.method === "POST" && url.pathname === "/render") {
-      try {
-        return await renderDirect(request, env);
-      } catch (error) {
-        return json({
-          error: "render_failed",
-          detail: error instanceof Error ? error.message.slice(0, 300) : "unknown_error",
-        }, 503);
-      }
+    if (request.method === "POST" && url.pathname === "/analyze-json") {
+      return forwardJson(request, env, "/analyze");
     }
 
     if (request.method === "POST" && url.pathname === "/jobs/render") {
